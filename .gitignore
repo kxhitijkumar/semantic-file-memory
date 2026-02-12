@@ -1,0 +1,66 @@
+# --- Python Standard ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# --- Virtual Environments ---
+venv/
+env/
+ENV/
+.env
+.venv
+.virtualenv/
+
+# --- Streamlit ---
+# Ignore secrets and local config
+.streamlit/secrets.toml
+.streamlit/config.toml
+
+# --- Project Specific ---
+# Ignore the generated graph HTML file (it is recreated on every run)
+graph.html
+
+# Ignore the folder containing your personal files
+# You don't want to accidentally commit resumes or invoices to GitHub!
+test_documents/
+documents/
+data/
+
+# --- IDE & OS ---
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Mac
+.DS_Store
+
+# VS Code / PyCharm
+.vscode/
+.idea/
+
+# --- AI Model Caching ---
+# In case models are downloaded locally into the project folder
+*.bin
+*.pth
+*.onnx
+models/
+cache/

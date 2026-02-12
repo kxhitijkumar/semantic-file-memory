@@ -1,0 +1,12 @@
+streamlit
+sentence-transformers
+networkx
+pyvis
+rank_bm25
+pypdf
+python-docx
+ollama
+scikit-learn
+numpy
+tqdm
+watchdog
