@@ -1,138 +1,147 @@
 # Semantic File Memory with Relationship Graphs
 
-A **local-first**, **privacy-focused** personal search engine that transforms a standard file folder into a **Knowledge Graph**. 
+A local-first, privacy-focused personal search system that turns a folder of files into a searchable knowledge graph using hybrid retrieval.
 
-This project implements a **Hybrid Search** architecture (Keyword + Semantic + Graph) to understand user intent, track document version history, and visualize connections between files without sending data to the cloud.
-
-> **Based on the research:** "Semantic File Memory with Relationship Graphs and Hybrid Local Search for Windows-Based Personal Knowledge Systems."
+This README has been updated to reflect the optimization strategy in `OptimizationGuide-SemanticFileMemorySystem.md`.
 
 ---
 
-## Key Features
+## Core Capabilities
 
-*   **Hybrid Search Engine:** Combines **BM25** (exact keyword matching) and **Sentence Transformers** (semantic/vibe matching) for high-accuracy retrieval.
-*   **Intent Parsing:** Uses a local LLM (**Phi-3 Mini** via Ollama) to understand queries like *"latest resume"* or *"invoice pdfs"* rather than just matching keywords.
-*   **Dynamic Knowledge Graph:** Automatically builds a visual graph of your files:
-    *   **Versioning:** Detects Draft vs. Final versions (e.g., `Resume_Draft.txt` → `Resume_Final.txt`).
-    *   **Semantic Links:** Connects files that discuss similar topics, even if filenames are different.
-*   **100% Local & Private:** No cloud APIs. All processing (OCR, Embeddings, LLM) happens on your device.
-*   **Explainable AI:** Search results include a "Why" section, breaking down scores by Keyword, Vector, and Graph centrality.
+- Hybrid retrieval using BM25 + semantic vectors + graph signals
+- Local intent parsing with Ollama (`phi3:mini`) for complex natural-language queries
+- Knowledge graph construction for version links and semantic relationships
+- Explainable ranking with score breakdowns across retrieval components
+- 100% local processing (no cloud APIs)
 
 ---
 
-## Architecture
+## Optimization Updates
 
-The system consists of three main layers:
+The system is now designed around these major improvements:
 
-1.  **Ingestion Layer:**
-    *   Crawls the file system.
-    *   Extracts text from `.txt`, `.md`, `.pdf`, `.docx`, `.py`.
-    *   Generates Vector Embeddings (`all-MiniLM-L6-v2`).
-2.  **Graph & Logic Layer:**
-    *   **Graph Construction:** Nodes are files. Edges are relationships (`VERSION_OF`, `RELATED_TO`, `CO_LOCATED`).
-    *   **Intent Parser:** `Phi-3` translates natural language into structured search constraints.
-3.  **UI Layer:**
-    *   **Streamlit:** Provides the search interface and interactive graph visualization (`PyVis`).
+1. **Persistent caching layer** for embeddings, metadata, and graph artifacts
+2. **FAISS-based semantic search** replacing brute-force similarity scans
+3. **Upgraded embedding options** (`BAAI/bge-small-en`, `all-mpnet-base-v2`)
+4. **Weighted hybrid scoring** (BM25 + semantic + graph)
+5. **Document chunking** for finer-grained retrieval
+6. **Selective LLM invocation** + query intent cache
+7. **Graph denoising** (similarity thresholds) + PageRank-based importance
+8. **Cross-encoder reranking** for improved top result ordering
+9. **Parallel ingestion** for faster indexing
+10. **Richer metadata extraction** for intent matching and filtering
+
+---
+
+## Expected Impact
+
+- Faster startup and query response (roughly 5–20x overall, depending on data size)
+- Improved ranking quality and semantic relevance
+- Better scalability for larger personal document collections
+- Cleaner graph relationships with stronger explainability
+
+---
+
+## System Architecture (Optimized)
+
+1. **Ingestion Layer**
+   - File parsing (`.txt`, `.md`, `.pdf`, `.docx`, `.py`)
+   - Chunk generation
+   - Parallel processing
+   - Metadata extraction
+
+2. **Indexing Layer**
+   - Embedding generation (configurable model)
+   - Persistent embedding cache
+   - FAISS vector index build/load
+
+3. **Retrieval & Ranking Layer**
+   - BM25 candidate retrieval
+   - Vector nearest-neighbor retrieval
+   - Graph-aware scoring
+   - Cross-encoder reranking
+
+4. **Graph & Reasoning Layer**
+   - `VERSION_OF`, `RELATED_TO`, `CO_LOCATED` edge construction
+   - Similarity threshold filtering
+   - PageRank centrality scoring
+   - Selective LLM intent parsing + intent cache
+
+5. **UI Layer**
+   - Streamlit interface
+   - Explainable result panel
+   - Interactive graph visualization (PyVis)
 
 ---
 
 ## Installation
 
 ### Prerequisites
-*   **Python 3.10+** installed.
-*   **[Ollama](https://ollama.com/)** installed and running.
+- Python 3.10+
+- [Ollama](https://ollama.com/) installed and running
 
-### 1. Clone/Setup Project
-Create a folder and navigate to it:
+### Install dependencies
+
 ```bash
-mkdir SemanticMemory
-cd SemanticMemory
+pip install -r requirements.txt
 ```
 
-### 2. Install Python Dependencies
-Create a `requirements.txt` file (or use the one provided) and run:
-```bash
-pip install streamlit sentence-transformers networkx pyvis rank_bm25 pypdf python-docx ollama scikit-learn numpy watchdog
-```
+If you are adding FAISS on Windows and face install issues, use the compatible wheel/package for your Python version.
 
-### 3. Setup the Local LLM
-This project uses Microsoft's **Phi-3 Mini** (3.8B parameters) for intent parsing. It is lightweight and fast.
-Open your terminal and run:
+### Pull local LLM model
+
 ```bash
 ollama pull phi3:mini
 ```
-*Keep the Ollama app running in the background.*
 
 ---
 
 ## Usage
 
-### 1. Prepare Your Data
-By default, the app looks for a folder named `test_documents` inside the project directory.
-1.  Create a folder named `test_documents`.
-2.  Add your PDF, DOCX, or TXT files there.
-    *   *Tip: Add "Draft" and "Final" versions of a file to test the graph linking.*
+1. Place files in `test_documents/`
+2. Run the app:
 
-### 2. Run the Application
 ```bash
 streamlit run app.py
 ```
 
-### 3. Interact
-*   **Search:** Type natural queries like *"Project specs related to privacy"* or *"Latest version of my CV"*.
-*   **Explore:** Look at the **Knowledge Graph** on the right.
-    *   **Green Lines:** Show document evolution (Draft → Final).
-    *   **Blue Lines:** Show conceptual similarity.
+3. Query examples:
+   - "latest resume"
+   - "invoice files from hosting"
+   - "project specs related to privacy"
+
+---
+
+## Recommended Optimization Rollout Order
+
+1. Persistent caching
+2. FAISS integration
+3. Document chunking
+4. Hybrid scoring tuning
+5. Embedding model upgrade
+6. Reranking layer
+7. LLM optimization
+8. Graph improvements
+9. Parallel processing
+10. Metadata extraction
 
 ---
 
 ## Project Structure
 
 ```text
-SemanticMemory/
-├── app.py                 # Frontend: Streamlit UI and Graph Visualization
-├── backend.py             # Backend: Indexing, Vector Search, Graph Logic, LLM
-├── requirements.txt       # Python dependencies
-├── test_documents/        # Folder containing your files (User Data)
-└── graph.html             # Generated by PyVis (Auto-created)
+SemanticMemoryProject/
+├── app.py
+├── backend.py
+├── requirements.txt
+├── test_documents/
+└── frontend/
 ```
 
 ---
 
-## Configuration
+## Notes for Refactoring
 
-To change the folder being scanned, edit **`app.py`**:
-
-```python
-def load_system():
-    # Change this path to scan your real Documents folder
-    target_folder = "./test_documents" 
-    # Example: target_folder = "C:/Users/Name/Documents/Work"
-    ...
-```
-
-To change the LLM model, edit **`backend.py`**:
-
-```python
-# In parse_intent function
-response = ollama.chat(model='phi3:mini', ...) 
-# You can change 'phi3:mini' to 'llama3' or 'mistral' if you have them pulled.
-```
-
----
-
-## Troubleshooting
-
-**Issue: "RuntimeError: Tried to instantiate class 'path.path'..."**
-*   **Cause:** A conflict between Streamlit's file watcher and PyTorch on Windows.
-*   **Fix:** Ignore it. It is a harmless background error. The app still works.
-*   **Alternative Fix:** Run the app with: `streamlit run app.py --server.fileWatcherType none`
-
-**Issue: "LLM Error / JSON Parse Error"**
-*   **Cause:** The local model (`phi3`) generated conversational text instead of strict JSON.
-*   **Fix:** The current `backend.py` has a robust retry mechanism and regex cleaner. Ensure you are using the latest code provided in Phase 6.
-
-**Issue: Search results are empty**
-*   **Fix:** Ensure you have text inside your test files. Empty files cannot be indexed by the Vector engine.
-
----
+- Keep module boundaries clear (ingestion, retrieval, graph, UI)
+- Prefer feature flags for incremental rollout
+- Preserve backward compatibility with existing cached/indexed data where possible
