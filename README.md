@@ -79,6 +79,7 @@ The system is now designed around these major improvements:
 ### Prerequisites
 - Python 3.10+
 - [Ollama](https://ollama.com/) installed and running
+- Node.js 18+ (for React frontend)
 
 ### Install dependencies
 
@@ -94,9 +95,18 @@ If you are adding FAISS on Windows and face install issues, use the compatible w
 ollama pull phi3:mini
 ```
 
+### Install frontend dependencies
+
+```bash
+cd frontend
+npm install
+```
+
 ---
 
 ## Usage
+
+### Option A: Streamlit UI (existing)
 
 1. Place files in `test_documents/`
 2. Run the app:
@@ -109,6 +119,31 @@ streamlit run app.py
    - "latest resume"
    - "invoice files from hosting"
    - "project specs related to privacy"
+
+### Option B: React Frontend + FastAPI (new)
+
+Run these in separate terminals.
+
+1. Start the backend API:
+
+```bash
+uvicorn api:app --reload --port 8000
+```
+
+2. Start the React frontend:
+
+```bash
+cd frontend
+npm run dev
+```
+
+3. Open the app at `http://localhost:5173`
+
+The frontend uses the FastAPI endpoints:
+- `GET /search?q=<query>`
+- `GET /graph`
+- `POST /ingest`
+- `GET /status`
 
 ---
 
@@ -132,10 +167,13 @@ streamlit run app.py
 ```text
 SemanticMemoryProject/
 ├── app.py
+├── api.py
 ├── backend.py
 ├── requirements.txt
 ├── test_documents/
 └── frontend/
+   ├── package.json
+   └── src/
 ```
 
 ---
