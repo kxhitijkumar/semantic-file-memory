@@ -195,10 +195,7 @@ SemanticMemoryProject/
 ├── requirements.txt
 ├── README.md
 ├── test_documents/
-│   ├── Invoice_Hosting_Service.txt
-│   ├── Meeting_Minutes_Jan.txt
-│   ├── Project_Specs.txt
-│   └── resumes/
+│   ├──....
 └── frontend/
     ├── index.html
     ├── package.json
