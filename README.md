@@ -1,4 +1,4 @@
-# SemanticMemoryGraph File Exprorer (SemanticMemoryProject)
+# SemanticMemoryGraph File Exprorer
 
 A **local-first semantic memory system** for personal documents that enables intelligent search, relationship discovery, and AI-powered Q&A entirely on your machine—no cloud APIs required.
 
