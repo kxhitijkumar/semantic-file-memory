@@ -1,4 +1,4 @@
-# MemoryGraph (SemanticMemoryProject)
+# Semantic Memory Project
 
 Local-first semantic memory system for personal documents.
 
@@ -216,20 +216,20 @@ Based on git history and current local workspace changes.
 
 ### Git timeline
 
-1. **`08434f2` — first commit**
+1. **first commit**
    - Initial project baseline (backend + early app structure)
 
-2. **`578604c` — optimization pass**
+2. **optimization pass**
    - Introduced retrieval/index performance improvements
 
-3. **`522e1d2` — performance optimizations (Version 2 branch point)**
+3. **performance optimizations (Version 2 branch point)**
    - Added FAISS, caching, and chunking improvements
    - Better indexing speed and repeated-run behavior
 
-4. **`963a962` — Version 3.0**
+4. **Version 3.0**
    - Advanced graph and retrieval iteration on top of V2
 
-5. **`0933c63` — Version 4.0 (current HEAD)**
+5. **Version 4.0 (current HEAD)**
    - Latest committed release state before local-only edits
 
 ### Current local (uncommitted) changes
