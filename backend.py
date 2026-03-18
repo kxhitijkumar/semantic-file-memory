@@ -1226,6 +1226,233 @@ Return ONLY JSON with keys:
 
         return results
 
+    def compare_documents(self, doc_ids: list[str]) -> dict:
+        """
+        Compute pairwise semantic similarity across two or more documents.
+
+        The score is context-aware and combines:
+          - global document embedding similarity
+          - chunk-to-chunk contextual alignment
+          - entity overlap
+
+        To avoid inflated scores from one or two shared keywords, a penalty is
+        applied when lexical overlap is very low and semantic alignment is weak.
+        """
+        unique_doc_ids = [doc_id for doc_id in dict.fromkeys(doc_ids) if doc_id in self.documents and doc_id in self.vectors]
+        if len(unique_doc_ids) < 2:
+            return {"files": [], "pairs": [], "matrix": []}
+
+        chunk_indices_by_doc: dict[str, list[int]] = {}
+        for index, parent_id in enumerate(self.chunk_parent_ids):
+            if parent_id in unique_doc_ids:
+                chunk_indices_by_doc.setdefault(parent_id, []).append(index)
+
+        stop_words = {
+            "the", "and", "for", "with", "from", "that", "this", "your", "you", "are",
+            "have", "has", "had", "was", "were", "will", "would", "should", "could", "into",
+            "about", "just", "only", "also", "than", "then", "they", "them", "their", "our",
+            "not", "but", "can", "all", "any", "one", "two", "three", "file", "files", "document",
+        }
+
+        def _token_profile(doc_id: str, top_k: int = 40) -> set[str]:
+            counter: dict[str, int] = {}
+            for idx in chunk_indices_by_doc.get(doc_id, []):
+                text = self.chunk_texts[idx]
+                tokens = re.findall(r"[a-zA-Z][a-zA-Z0-9_]{2,}", text.lower())
+                for token in tokens:
+                    if token in stop_words:
+                        continue
+                    counter[token] = counter.get(token, 0) + 1
+            ranked = sorted(counter.items(), key=lambda item: item[1], reverse=True)[:top_k]
+            return {token for token, _ in ranked}
+
+        def _entity_profile(doc_id: str) -> set[str]:
+            payload = self.documents.get(doc_id, {}).get("entities") or {}
+            values: set[str] = set()
+            for _, raw_list in payload.items():
+                if not isinstance(raw_list, list):
+                    continue
+                for item in raw_list:
+                    token = str(item).strip().lower()
+                    if token:
+                        values.add(token)
+            return values
+
+        token_profiles = {doc_id: _token_profile(doc_id) for doc_id in unique_doc_ids}
+        entity_profiles = {doc_id: _entity_profile(doc_id) for doc_id in unique_doc_ids}
+
+        pair_results = []
+        matrix_values: dict[str, dict[str, float]] = {
+            doc_id: {inner: (1.0 if inner == doc_id else 0.0) for inner in unique_doc_ids}
+            for doc_id in unique_doc_ids
+        }
+
+        for i, doc_a in enumerate(unique_doc_ids):
+            for j in range(i + 1, len(unique_doc_ids)):
+                doc_b = unique_doc_ids[j]
+                vec_a = self.vectors.get(doc_a)
+                vec_b = self.vectors.get(doc_b)
+                if vec_a is None or vec_b is None:
+                    continue
+
+                embedding_similarity = float(max(0.0, np.dot(vec_a, vec_b)))
+
+                chunk_alignment = 0.0
+                indices_a = chunk_indices_by_doc.get(doc_a, [])
+                indices_b = chunk_indices_by_doc.get(doc_b, [])
+                if indices_a and indices_b and self.chunk_embeddings is not None and len(self.chunk_embeddings) > 0:
+                    matrix_a = self.chunk_embeddings[indices_a]
+                    matrix_b = self.chunk_embeddings[indices_b]
+                    pair_matrix = np.dot(matrix_a, matrix_b.T)
+                    forward = float(np.mean(np.max(pair_matrix, axis=1))) if pair_matrix.size else 0.0
+                    backward = float(np.mean(np.max(pair_matrix, axis=0))) if pair_matrix.size else 0.0
+                    chunk_alignment = max(0.0, (forward + backward) / 2.0)
+
+                tokens_a = token_profiles.get(doc_a, set())
+                tokens_b = token_profiles.get(doc_b, set())
+                union_tokens = tokens_a | tokens_b
+                shared_tokens = tokens_a & tokens_b
+                keyword_overlap = (len(shared_tokens) / len(union_tokens)) if union_tokens else 0.0
+
+                entities_a = entity_profiles.get(doc_a, set())
+                entities_b = entity_profiles.get(doc_b, set())
+                shared_entities = entities_a & entities_b
+                entity_base = min(len(entities_a), len(entities_b))
+                entity_overlap = (len(shared_entities) / entity_base) if entity_base > 0 else 0.0
+
+                # Calibrate to normalize naturally-high cosine baselines while allowing
+                # identical files to score perfectly. Lower floors than before.
+                embedding_calibrated = max(0.0, min(1.0, (embedding_similarity - 0.48) / 0.40))
+                chunk_calibrated = max(0.0, min(1.0, (chunk_alignment - 0.46) / 0.42))
+
+                # Divergence penalty: punish disagreement between dimensions.
+                # If one is high and one is low, that's suspicious (noise).
+                divergence = abs(embedding_calibrated - chunk_calibrated)
+                divergence_penalty = 1.0 - (0.25 * divergence)
+
+                # Blend: still require alignment, but use weighted average + divergence gate.
+                # Geometric mean was too strict for near-identical files.
+                blend_score = (0.55 * embedding_calibrated) + (0.45 * chunk_calibrated)
+                # Reduce entity contribution to prevent single-entity false positives
+                score = (0.92 * blend_score * divergence_penalty) + (0.03 * entity_overlap)
+
+                # ─ HYBRID GATE 1: Require minimum semantic alignment ─
+                # Even with shared entities/keywords, at least one semantic dimension must be strong
+                max_semantic = max(embedding_calibrated, chunk_calibrated)
+                min_semantic = min(embedding_calibrated, chunk_calibrated)
+                if max_semantic < 0.55:
+                    # Very weak semantics across the board — suppress even if entities match
+                    score = min(score, 0.35)
+                elif max_semantic < 0.62 and min_semantic < 0.45:
+                    # One dimension is weak, the other just okay — be cautious
+                    score *= 0.75
+
+                # ─ HYBRID GATE 2: Entity-only false positive prevention ─
+                # High entity overlap alone should not drive similarity without semantic backing
+                if entity_overlap > 0.4 and max_semantic < 0.60:
+                    # Many shared entities but weak semantics = likely noise
+                    score = min(score, 0.42)
+                    if max_semantic < 0.50:
+                        score = min(score, 0.30)
+
+                # ─ HYBRID GATE 3: Keyword/lexical gates with stricter thresholds ─
+                # Apply even with some overlap — penalize lack of lexical evidence
+                if keyword_overlap < 0.08:
+                    score *= 0.90
+                if keyword_overlap < 0.04 and entity_overlap < 0.2:
+                    score = min(score, 0.40)
+
+                # Strong divergence gate: dimensions must not disagree too much.
+                # This is the main anti-false-positive mechanism.
+                if divergence > 0.55:
+                    score = min(score, 0.45)
+                if divergence > 0.70:
+                    score = min(score, 0.30)
+
+                score = float(min(1.0, max(0.0, score)))
+
+                # Balanced label thresholds.
+                if score >= 0.72:
+                    label = "strong contextual match"
+                elif score >= 0.52:
+                    label = "moderate contextual match"
+                elif score >= 0.35:
+                    label = "weak thematic overlap"
+                else:
+                    label = "low semantic similarity"
+
+                explanation_parts = [
+                    f"{self.documents[doc_a]['filename']} and {self.documents[doc_b]['filename']} show {label}."
+                ]
+                if embedding_calibrated >= 0.70 and chunk_calibrated >= 0.70 and divergence <= 0.25:
+                    explanation_parts.append("Strong alignment across embedding, chunk context, and entities indicates genuine similarity.")
+                elif embedding_calibrated >= 0.62 and chunk_calibrated >= 0.62 and divergence <= 0.35:
+                    explanation_parts.append("Both semantic dimensions (embedding & context) agree strongly.")
+                elif keyword_overlap > 0.14:
+                    explanation_parts.append("Shared terminology is notable, but semantic alignment is modest.")
+                else:
+                    explanation_parts.append("Limited contextual overlap detected; score is conservative.")
+
+                if divergence > 0.55:
+                    explanation_parts.append(f"⚠ Dimension mismatch: embedding {embedding_calibrated:.2f} vs context {chunk_calibrated:.2f} reduce confidence.")
+
+                if shared_entities:
+                    entity_preview = sorted(shared_entities)[:3]
+                    explanation_parts.append(f"Common entities: {', '.join(entity_preview)}.")
+
+                top_keywords = sorted(shared_tokens)[:6]
+
+                pair_payload = {
+                    "doc_a": doc_a,
+                    "doc_b": doc_b,
+                    "score": round(score, 4),
+                    "label": label,
+                    "metrics": {
+                        "embedding_similarity": round(float(embedding_similarity), 4),
+                        "chunk_alignment": round(float(chunk_alignment), 4),
+                        "embedding_calibrated": round(float(embedding_calibrated), 4),
+                        "chunk_calibrated": round(float(chunk_calibrated), 4),
+                        "blend_score": round(float(blend_score), 4),
+                        "dimension_divergence": round(float(divergence), 4),
+                        "keyword_overlap": round(float(keyword_overlap), 4),
+                        "entity_overlap": round(float(entity_overlap), 4),
+                    },
+                    "shared_keywords": top_keywords,
+                    "shared_entities": sorted(shared_entities)[:6],
+                    "explanation": " ".join(explanation_parts),
+                }
+                pair_results.append(pair_payload)
+                matrix_values[doc_a][doc_b] = score
+                matrix_values[doc_b][doc_a] = score
+
+        pair_results.sort(key=lambda item: item["score"], reverse=True)
+
+        matrix_rows = []
+        for doc_id in unique_doc_ids:
+            row = {
+                "doc_id": doc_id,
+                "values": [round(float(matrix_values[doc_id][other_id]), 4) for other_id in unique_doc_ids],
+            }
+            matrix_rows.append(row)
+
+        files_payload = []
+        for doc_id in unique_doc_ids:
+            doc = self.documents[doc_id]
+            files_payload.append(
+                {
+                    "doc_id": doc_id,
+                    "filename": doc.get("filename", "unknown"),
+                    "path": doc.get("path", ""),
+                    "metadata": doc.get("metadata", {}),
+                }
+            )
+
+        return {
+            "files": files_payload,
+            "pairs": pair_results,
+            "matrix": matrix_rows,
+        }
+
     def get_graph_html(self, query=None):
         from pyvis.network import Network
 

@@ -12,6 +12,7 @@ The React frontend (Vite, localhost:5173) talks to these endpoints:
 """
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -21,6 +22,7 @@ from typing import Optional
 import ollama
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
 from backend import SemanticMemory
 
@@ -50,6 +52,7 @@ memory = SemanticMemory(root_directory=ROOT_DIR)
 # ── Supported file extensions for ingest ──────────────────────────────────
 
 SUPPORTED_EXTENSIONS = {".txt", ".md", ".pdf", ".docx", ".py", ".json"}
+TEXT_EDITABLE_EXTENSIONS = {".txt", ".md", ".py", ".json"}
 
 # ── Edge-type colour map (matches React dashboard) ────────────────────────
 
@@ -76,6 +79,43 @@ def _short_path(full_path: str) -> str:
     if full_path.startswith(home):
         return "~" + full_path[len(home):]
     return full_path
+
+
+def _resolve_relative_path(rel_path: str) -> tuple[str, str]:
+    """Resolve a user-provided path under ROOT_DIR and block traversal."""
+    clean = (rel_path or "").strip().replace("\\", "/")
+    clean = clean.lstrip("/")
+    normalized = os.path.normpath(clean)
+
+    if normalized in ("", "."):
+        raise HTTPException(status_code=400, detail="Path must not be empty.")
+
+    abs_path = os.path.abspath(os.path.join(ROOT_DIR, normalized))
+    root_abs = os.path.abspath(ROOT_DIR)
+
+    try:
+        common = os.path.commonpath([root_abs, abs_path])
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid path.")
+
+    if common != root_abs:
+        raise HTTPException(status_code=400, detail="Path is outside the managed root.")
+
+    rel_norm = os.path.relpath(abs_path, root_abs).replace("\\", "/")
+    return abs_path, rel_norm
+
+
+def _ensure_supported_extension(path: str):
+    ext = os.path.splitext(path)[1].lower()
+    if ext not in SUPPORTED_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Unsupported extension '{ext}'.")
+
+
+def _reindex_memory():
+    try:
+        memory.index_files()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Re-index failed: {exc}")
 
 
 def _infer_graph_positions(nodes: list[dict]) -> list[dict]:
@@ -491,6 +531,258 @@ def debug_graph():
     }
 
 
+@app.get("/files")
+def list_files():
+    """List all supported files under ROOT_DIR for file-management UI."""
+    items = []
+    for path in sorted(memory._iter_supported_files()):
+        try:
+            stat = os.stat(path)
+        except FileNotFoundError:
+            continue
+
+        rel = os.path.relpath(path, ROOT_DIR).replace("\\", "/")
+        ext = os.path.splitext(path)[1].lower()
+        items.append({
+            "name": os.path.basename(path),
+            "path": rel,
+            "ext": ext.lstrip("."),
+            "size": stat.st_size,
+            "modified": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+            "editable": ext in TEXT_EDITABLE_EXTENSIONS,
+        })
+
+    return {
+        "root_directory": ROOT_DIR,
+        "count": len(items),
+        "files": items,
+    }
+
+
+class SimilarityRequest(BaseModel):
+    paths: list[str]
+
+
+@app.post("/similarity")
+def similarity(payload: SimilarityRequest):
+    """
+    Compare semantic similarity across 2+ files using context-aware vectors.
+    Returns pairwise scores + explanations + similarity matrix.
+    """
+    raw_paths = payload.paths or []
+    normalized_paths = [str(path).strip() for path in raw_paths if str(path).strip()]
+    normalized_paths = list(dict.fromkeys(normalized_paths))
+
+    if len(normalized_paths) < 2:
+        raise HTTPException(status_code=400, detail="Select at least 2 files.")
+
+    doc_id_by_abs: dict[str, str] = {}
+    for doc_id, doc in memory.documents.items():
+        abs_path = os.path.normcase(os.path.normpath(doc.get("path", "")))
+        if abs_path:
+            doc_id_by_abs[abs_path] = doc_id
+
+    resolved_doc_ids = []
+    resolved_paths = []
+    missing_paths = []
+
+    for rel_path in normalized_paths:
+        try:
+            abs_path, rel_norm = _resolve_relative_path(rel_path)
+        except HTTPException:
+            missing_paths.append(rel_path)
+            continue
+
+        doc_id = doc_id_by_abs.get(os.path.normcase(os.path.normpath(abs_path)))
+        if not doc_id:
+            missing_paths.append(rel_path)
+            continue
+
+        resolved_doc_ids.append(doc_id)
+        resolved_paths.append(rel_norm)
+
+    resolved_doc_ids = list(dict.fromkeys(resolved_doc_ids))
+    if len(resolved_doc_ids) < 2:
+        raise HTTPException(status_code=400, detail="At least 2 valid indexed files are required.")
+
+    comparison = memory.compare_documents(resolved_doc_ids)
+    file_meta = {item["doc_id"]: item for item in comparison.get("files", [])}
+
+    files_payload = []
+    for doc_id in resolved_doc_ids:
+        doc = memory.documents.get(doc_id, {})
+        abs_path = doc.get("path", "")
+        rel_path = os.path.relpath(abs_path, ROOT_DIR).replace("\\", "/") if abs_path else ""
+        files_payload.append(
+            {
+                "doc_id": doc_id,
+                "filename": doc.get("filename", "unknown"),
+                "path": rel_path,
+                "ext": _ext(doc.get("filename", "")),
+                "metadata": doc.get("metadata", {}),
+            }
+        )
+
+    pairs_payload = []
+    for pair in comparison.get("pairs", []):
+        doc_a = pair.get("doc_a")
+        doc_b = pair.get("doc_b")
+        a_meta = file_meta.get(doc_a, {})
+        b_meta = file_meta.get(doc_b, {})
+        a_abs = a_meta.get("path", "")
+        b_abs = b_meta.get("path", "")
+        pairs_payload.append(
+            {
+                "doc_a": doc_a,
+                "doc_b": doc_b,
+                "file_a": {
+                    "filename": a_meta.get("filename", memory.documents.get(doc_a, {}).get("filename", "unknown")),
+                    "path": os.path.relpath(a_abs, ROOT_DIR).replace("\\", "/") if a_abs else "",
+                },
+                "file_b": {
+                    "filename": b_meta.get("filename", memory.documents.get(doc_b, {}).get("filename", "unknown")),
+                    "path": os.path.relpath(b_abs, ROOT_DIR).replace("\\", "/") if b_abs else "",
+                },
+                "score": pair.get("score", 0.0),
+                "label": pair.get("label", ""),
+                "metrics": pair.get("metrics", {}),
+                "shared_keywords": pair.get("shared_keywords", []),
+                "shared_entities": pair.get("shared_entities", []),
+                "explanation": pair.get("explanation", ""),
+            }
+        )
+
+    matrix_payload = []
+    matrix_rows = comparison.get("matrix", [])
+    for row in matrix_rows:
+        row_doc_id = row.get("doc_id")
+        row_doc = memory.documents.get(row_doc_id, {})
+        row_abs = row_doc.get("path", "")
+        matrix_payload.append(
+            {
+                "doc_id": row_doc_id,
+                "filename": row_doc.get("filename", "unknown"),
+                "path": os.path.relpath(row_abs, ROOT_DIR).replace("\\", "/") if row_abs else "",
+                "values": row.get("values", []),
+            }
+        )
+
+    return {
+        "count": len(files_payload),
+        "files": files_payload,
+        "pairs": pairs_payload,
+        "matrix": matrix_payload,
+        "missing": missing_paths,
+    }
+
+
+@app.get("/files/content")
+def get_file_content(path: str = Query(..., min_length=1)):
+    """Return UTF-8 text content for editable file types."""
+    abs_path, rel_path = _resolve_relative_path(path)
+    if not os.path.exists(abs_path) or not os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    ext = os.path.splitext(abs_path)[1].lower()
+    if ext not in TEXT_EDITABLE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="This file type is not editable in-app.")
+
+    try:
+        with open(abs_path, "r", encoding="utf-8", errors="ignore") as file:
+            content = file.read()
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to read file: {exc}")
+
+    return {
+        "path": rel_path,
+        "content": content,
+        "length": len(content),
+    }
+
+
+@app.post("/files")
+def create_file(payload: dict):
+    """Create a new text file under ROOT_DIR and re-index the corpus."""
+    raw_path = str(payload.get("path", "")).strip().strip('"').strip("'")
+    content = payload.get("content", "")
+    if content is None:
+        content = ""
+
+    if raw_path.endswith("/") or raw_path.endswith("\\"):
+        raise HTTPException(status_code=400, detail="Path must include a filename, not just a folder.")
+
+    # Be user-friendly: if no extension is provided, default to .txt
+    base_name = os.path.basename(raw_path.replace("\\", "/"))
+    if base_name and "." not in base_name:
+        raw_path = f"{raw_path}.txt"
+
+    abs_path, rel_path = _resolve_relative_path(raw_path)
+
+    ext = os.path.splitext(abs_path)[1].lower()
+    if ext not in TEXT_EDITABLE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Only text-like files can be created in-app ({', '.join(sorted(TEXT_EDITABLE_EXTENSIONS))}).")
+
+    _ensure_supported_extension(abs_path)
+
+    if os.path.exists(abs_path):
+        raise HTTPException(status_code=409, detail="File already exists.")
+
+    try:
+        os.makedirs(os.path.dirname(abs_path), exist_ok=True)
+        with open(abs_path, "w", encoding="utf-8") as file:
+            file.write(str(content))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to create file: {exc}")
+
+    _reindex_memory()
+    return {"status": "ok", "path": rel_path}
+
+
+@app.put("/files/content")
+def update_file_content(payload: dict):
+    """Overwrite file content for editable file types and re-index."""
+    raw_path = str(payload.get("path", ""))
+    if not raw_path:
+        raise HTTPException(status_code=400, detail="Path is required.")
+
+    content = payload.get("content", "")
+    if content is None:
+        content = ""
+
+    abs_path, rel_path = _resolve_relative_path(raw_path)
+    if not os.path.exists(abs_path) or not os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    ext = os.path.splitext(abs_path)[1].lower()
+    if ext not in TEXT_EDITABLE_EXTENSIONS:
+        raise HTTPException(status_code=400, detail="This file type is not editable in-app.")
+
+    try:
+        with open(abs_path, "w", encoding="utf-8") as file:
+            file.write(str(content))
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to save file: {exc}")
+
+    _reindex_memory()
+    return {"status": "ok", "path": rel_path}
+
+
+@app.delete("/files")
+def delete_file(path: str = Query(..., min_length=1)):
+    """Delete a managed file and re-index."""
+    abs_path, rel_path = _resolve_relative_path(path)
+    if not os.path.exists(abs_path) or not os.path.isfile(abs_path):
+        raise HTTPException(status_code=404, detail="File not found.")
+
+    try:
+        os.remove(abs_path)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to delete file: {exc}")
+
+    _reindex_memory()
+    return {"status": "ok", "path": rel_path}
+
+
 
 @app.post("/ingest")
 async def ingest(files: list[UploadFile] = File(...)):
@@ -549,6 +841,19 @@ async def ingest(files: list[UploadFile] = File(...)):
     }
 
 
+@app.post("/reindex")
+def reindex():
+    """Force a full re-index of files under ROOT_DIR."""
+    _reindex_memory()
+    return {
+        "status": "ok",
+        "total_documents": len(memory.documents),
+        "total_chunks": len(memory.chunks),
+        "graph_nodes": memory.graph.number_of_nodes() if memory.graph else 0,
+        "graph_edges": memory.graph.number_of_edges() if memory.graph else 0,
+    }
+
+
 @app.get("/status")
 def status():
     """
@@ -586,9 +891,6 @@ Changes vs previous version
 3. Confidence is computed only over primary-file chunks when available,
    so a thin primary + rich neighbour doesn't inflate the score.
 """
-
-from pydantic import BaseModel
-from typing import Optional
 
 class QARequest(BaseModel):
     question: str

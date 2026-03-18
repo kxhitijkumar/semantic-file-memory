@@ -47,6 +47,15 @@ const EXT_COLOR  = {
   json: { fg: T.amber,  bg: T.amberDim  },
 };
 
+const FILE_GLYPH = {
+  pdf: "◈",
+  md: "✎",
+  docx: "▤",
+  py: "λ",
+  txt: "≡",
+  json: "{}",
+};
+
 /* ─── Global CSS ─────────────────────────────────────────────────────────── */
 const GLOBAL_CSS = `
   @import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,wght@0,300;0,400;0,500;0,600&family=DM+Mono:wght@400;500&display=swap');
@@ -449,6 +458,7 @@ function useForceGraph(graphData, filter, showFolders, W, H) {
 
 /* ─── Graph panel ─────────────────────────────────────────────────────────── */
 function GraphPanel({ graphData, highlightId, onNodeSelect }) {
+  const INITIAL_ZOOM = 1.1;
   const containerRef  = useRef(null);
   const [dims, setDims]           = useState({ w: 700, h: 480 });
   const [filter, setFilter]       = useState("ALL");
@@ -456,7 +466,7 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
   const [hovered, setHovered]     = useState(null);
   const [selected, setSelected]   = useState(null);
   const [pan, setPan]             = useState({ x: 0, y: 0 });
-  const [zoom, setZoom]           = useState(1);
+  const [zoom, setZoom]           = useState(INITIAL_ZOOM);
   const [isDragging, setIsDragging]   = useState(false);
   const [dragNode, setDragNode]   = useState(null);
   const [pinnedPositions, setPinnedPositions] = useState({});
@@ -567,7 +577,7 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
   };
 
   const handleZoomBtn = (dir) => setZoom(z => Math.max(0.3, Math.min(3, z * (dir > 0 ? 1.25 : 0.8))));
-  const handleReset   = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+  const handleReset   = () => { setZoom(INITIAL_ZOOM); setPan({ x: 0, y: 0 }); };
 
   // Edge path — curved for semantic, straight for structural
   const edgePath = (ax, ay, bx, by, type) => {
@@ -595,12 +605,25 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
   const FILE_ICON_PATH = "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6";
   const FOLDER_ICON_PATH = "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z";
 
+  // Icon components
+  const ZoomInIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M11 8v6M8 11h6"/></svg>;
+  const ZoomOutIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/><path d="M8 11h6"/></svg>;
+  const ResetIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/><path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M3 21v-5h5"/></svg>;
+  const FilterIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3"/></svg>;
+  const NetworkIcon = () => <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="3" r="1"/><circle cx="5" cy="3" r="1"/><circle cx="21" cy="14" r="1"/><circle cx="3" cy="21" r="1"/><path d="M12 13v8M12 13L6.5 7.5M12 13l5.5-5.5M20 4l1 8M6 4l-1 8M3.5 20.5l7.5-7.5M20 13v8"/></svg>;
+
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
 
       {/* ── Toolbar ── */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px",
-        borderBottom: `1px solid ${T.border}`, flexShrink: 0, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px",
+        borderBottom: `1px solid ${T.border}`, flexShrink: 0, flexWrap: "wrap", background: T.panel }}>
+
+        {/* Filter Section Label with Icon */}
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginRight: 2 }}>
+          <FilterIcon />
+          <span style={{ fontSize: 9, color: T.faint, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>Edges</span>
+        </div>
 
         {/* Edge filters */}
         {["ALL", "VERSION_OF", "CO_LOCATED", "RELATED_TO", "SHARES_ENTITY", "SAME_TOPIC"].map(f => {
@@ -608,24 +631,31 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
           const c = EDGE_COLOR[f] || T.blue;
           return (
             <button key={f} onClick={() => setFilter(f)}
-              style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.05em", padding: "4px 11px",
-                borderRadius: 20, border: `1px solid ${active ? c : T.border}`,
-                background: active ? `${c}1a` : "transparent",
+              style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.05em", padding: "5px 12px",
+                borderRadius: 16, border: `1.2px solid ${active ? c : T.border}`,
+                background: active ? `${c}15` : "transparent",
                 color: active ? c : T.muted, cursor: "pointer", fontFamily: "inherit",
-                transition: "all .15s" }}>
+                transition: "all .18s", display: "inline-block",
+                boxShadow: active ? `0 0 0 2px ${c}08` : "none" }}
+              title={f === "ALL" ? "Show all relationships" : `Filter by ${f.replace(/_/g, " ").toLowerCase()}`}>
               {f === "ALL" ? "All" : f.replace(/_/g, " ")}
             </button>
           );
         })}
 
+        {/* Divider */}
+        <div style={{ height: 18, width: 1, background: T.border, margin: "0 4px", opacity: 0.5 }} />
+
         {/* Folder toggle */}
         <button onClick={() => setShowFolders(v => !v)}
-          style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, fontWeight: 600,
-            padding: "4px 11px", borderRadius: 20, cursor: "pointer", fontFamily: "inherit",
-            border: `1px solid ${showFolders ? T.borderHi : T.border}`,
-            background: showFolders ? T.raised : "transparent",
-            color: showFolders ? T.text : T.muted, transition: "all .15s" }}>
-          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+          style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 600,
+            padding: "5px 12px", borderRadius: 16, cursor: "pointer", fontFamily: "inherit",
+            border: `1.2px solid ${showFolders ? T.teal : T.border}`,
+            background: showFolders ? `${T.teal}12` : "transparent",
+            color: showFolders ? T.teal : T.muted, transition: "all .18s", 
+            boxShadow: showFolders ? `0 0 0 2px ${T.teal}08` : "none" }}
+          title="Toggle folder nodes">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
             <path d={FOLDER_ICON_PATH} />
           </svg>
           Folders
@@ -634,28 +664,50 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
         <div style={{ flex: 1 }} />
 
         {/* Node count badge */}
-        <span style={{ fontSize: 10, color: T.faint, fontFamily: "'DM Mono',monospace" }}>
-          {visibleNodes.length} nodes · {visibleEdges.length} edges
-        </span>
+        <div style={{ fontSize: 11, color: T.faint, fontFamily: "'DM Mono',monospace", padding: "5px 10px",
+          background: T.raised, borderRadius: 12, border: `1px solid ${T.borderMd}`, display: "flex", alignItems: "center", gap: 6 }}>
+          <NetworkIcon />
+          <span><strong style={{ color: T.text }}>{visibleNodes.length}</strong> nodes</span>
+          <span style={{ color: T.border }}>·</span>
+          <span><strong style={{ color: T.text }}>{visibleEdges.length}</strong> edges</span>
+        </div>
 
-        {/* Zoom controls */}
-        {[["−", -1], ["+", 1]].map(([label, dir]) => (
-          <button key={label} onClick={() => handleZoomBtn(dir)}
-            style={{ width: 26, height: 26, borderRadius: 7, border: `1px solid ${T.border}`,
-              background: T.raised, color: T.muted, fontSize: 14, cursor: "pointer",
+        {/* Divider */}
+        <div style={{ height: 18, width: 1, background: T.border, margin: "0 4px", opacity: 0.5 }} />
+
+        {/* Zoom controls group */}
+        <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
+          <button onClick={() => handleZoomBtn(-1)}
+            style={{ width: 28, height: 28, borderRadius: 8, border: `1px solid ${T.border}`,
+              background: T.raised, color: T.muted, cursor: "pointer",
               display: "flex", alignItems: "center", justifyContent: "center",
               fontFamily: "inherit", transition: "all .15s" }}
-            onMouseEnter={e => { e.currentTarget.style.color = T.text; e.currentTarget.style.borderColor = T.borderMd; }}
-            onMouseLeave={e => { e.currentTarget.style.color = T.muted; e.currentTarget.style.borderColor = T.border; }}>
-            {label}
+            onMouseEnter={e => { e.currentTarget.style.color = T.text; e.currentTarget.style.borderColor = T.borderMd; e.currentTarget.style.background = T.borderMd; }}
+            onMouseLeave={e => { e.currentTarget.style.color = T.muted; e.currentTarget.style.borderColor = T.border; e.currentTarget.style.background = T.raised; }}
+            title="Zoom out">
+            <ZoomOutIcon />
           </button>
-        ))}
+          <button onClick={() => handleZoomBtn(1)}
+            style={{ width: 28, height: 28, borderRadius: 8, border: `1px solid ${T.border}`,
+              background: T.raised, color: T.muted, cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontFamily: "inherit", transition: "all .15s" }}
+            onMouseEnter={e => { e.currentTarget.style.color = T.text; e.currentTarget.style.borderColor = T.borderMd; e.currentTarget.style.background = T.borderMd; }}
+            onMouseLeave={e => { e.currentTarget.style.color = T.muted; e.currentTarget.style.borderColor = T.border; e.currentTarget.style.background = T.raised; }}
+            title="Zoom in">
+            <ZoomInIcon />
+          </button>
+        </div>
+
+        {/* Reset button */}
         <button onClick={handleReset}
-          style={{ fontSize: 10, fontWeight: 600, padding: "4px 10px", borderRadius: 7,
+          style={{ fontSize: 10, fontWeight: 600, padding: "5px 12px", borderRadius: 8,
             border: `1px solid ${T.border}`, background: T.raised, color: T.muted,
-            cursor: "pointer", fontFamily: "inherit", transition: "all .15s" }}
-          onMouseEnter={e => { e.currentTarget.style.color = T.text; }}
-          onMouseLeave={e => { e.currentTarget.style.color = T.muted; }}>
+            cursor: "pointer", fontFamily: "inherit", transition: "all .15s", display: "flex", alignItems: "center", gap: 5 }}
+          onMouseEnter={e => { e.currentTarget.style.color = T.text; e.currentTarget.style.borderColor = T.borderMd; }}
+          onMouseLeave={e => { e.currentTarget.style.color = T.muted; e.currentTarget.style.borderColor = T.border; }}
+          title="Reset zoom and pan">
+          <ResetIcon />
           Reset
         </button>
       </div>
@@ -823,52 +875,57 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
 
         {/* ── Node inspector panel ── */}
         {selectedNode && (
-          <div className="fu" style={{ width: 210, flexShrink: 0, borderLeft: `1px solid ${T.border}`,
-            background: T.surface, overflowY: "auto", padding: "14px 14px" }}>
+          <div className="fu" style={{ width: 240, flexShrink: 0, borderLeft: `1px solid ${T.border}`,
+            background: T.surface, overflowY: "auto", padding: "16px 14px", display: "flex", flexDirection: "column" }}>
 
-            {/* Header */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
-              <span style={{ fontSize: 10, color: T.faint, letterSpacing: "0.08em", fontWeight: 600 }}>NODE INSPECTOR</span>
+            {/* Header with icon */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, paddingBottom: 12, borderBottom: `1px solid ${T.border}` }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                <NetworkIcon />
+                <span style={{ fontSize: 11, color: T.faint, letterSpacing: "0.1em", fontWeight: 700, textTransform: "uppercase" }}>Details</span>
+              </div>
               <button onClick={() => setSelected(null)}
-                style={{ background: "transparent", border: "none", cursor: "pointer",
-                  color: T.faint, padding: 2, display: "flex" }}
-                onMouseEnter={e => e.currentTarget.style.color = T.text}
-                onMouseLeave={e => e.currentTarget.style.color = T.faint}>
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                style={{ background: T.raised, border: `1px solid ${T.border}`, cursor: "pointer",
+                  color: T.muted, padding: 4, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, transition: "all .15s" }}
+                onMouseEnter={e => { e.currentTarget.style.color = T.text; e.currentTarget.style.borderColor = T.borderMd; }}
+                onMouseLeave={e => { e.currentTarget.style.color = T.muted; e.currentTarget.style.borderColor = T.border; }}
+                title="Close">
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
                   <path d="M18 6 6 18M6 6l12 12" />
                 </svg>
               </button>
             </div>
 
-            {/* Node identity */}
-            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+            {/* Node identity card */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 16, padding: "12px", background: T.raised, borderRadius: 10, border: `1px solid ${T.borderMd}` }}>
               {selectedNode.nodeType === "folder" ? (
-                <div style={{ width: 36, height: 36, borderRadius: 8, background: T.raised,
-                  border: `1px solid ${T.borderMd}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={T.muted} strokeWidth="1.8" strokeLinecap="round">
+                <div style={{ width: 40, height: 40, borderRadius: 10, background: `${T.teal}15`, border: `1.5px solid ${T.teal}30`,
+                  display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={T.teal} strokeWidth="2" strokeLinecap="round">
                     <path d={FOLDER_ICON_PATH} />
                   </svg>
                 </div>
               ) : (
-                <div style={{ width: 36, height: 36, borderRadius: 8,
+                <div style={{ width: 40, height: 40, borderRadius: 10,
                   background: (EXT_COLOR[selectedNode.ext] || { bg: T.blueDim }).bg,
+                  border: `1.5px solid ${(EXT_COLOR[selectedNode.ext] || { fg: T.blue }).fg}40`,
                   display: "flex", alignItems: "center", justifyContent: "center" }}>
-                  <span style={{ fontSize: 10, fontWeight: 700, color: (EXT_COLOR[selectedNode.ext] || { fg: T.blue }).fg,
+                  <span style={{ fontSize: 12, fontWeight: 700, color: (EXT_COLOR[selectedNode.ext] || { fg: T.blue }).fg,
                     fontFamily: "'DM Mono',monospace" }}>
-                    {(selectedNode.ext || "?").toUpperCase()}
+                    {(selectedNode.ext || "?").toUpperCase().slice(0, 3)}
                   </span>
                 </div>
               )}
               <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: T.text, wordBreak: "break-all", lineHeight: 1.4 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: T.text, wordBreak: "break-word", lineHeight: 1.3, marginBottom: 5 }}>
                   {selectedNode.label}
                 </div>
-                <div style={{ fontSize: 10, color: T.faint, marginTop: 3, fontFamily: "'DM Mono',monospace" }}>
-                  {selectedNode.nodeType === "folder" ? "📁 folder" : selectedNode.docType || "file"}
+                <div style={{ fontSize: 9, color: T.teal, fontWeight: 600, marginBottom: 3, textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                  {selectedNode.nodeType === "folder" ? "📁 Folder" : selectedNode.docType || "File"}
                 </div>
                 {selectedNode.relPath && (
-                  <div style={{ fontSize: 9, color: T.faint, marginTop: 2, fontFamily: "'DM Mono',monospace",
-                    wordBreak: "break-all", lineHeight: 1.5 }}>
+                  <div style={{ fontSize: 8, color: T.muted, marginTop: 4, fontFamily: "'DM Mono',monospace",
+                    wordBreak: "break-all", lineHeight: 1.4, padding: "6px 8px", background: T.panel, borderRadius: 6 }}>
                     {selectedNode.relPath}
                   </div>
                 )}
@@ -877,12 +934,13 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
 
             {/* Connections */}
             {selectedEdges.length > 0 && (
-              <div>
-                <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.07em", marginBottom: 8 }}>
-                  CONNECTIONS ({selectedEdges.length})
+              <div style={{ marginBottom: 14 }}>
+                <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.1em", marginBottom: 10, fontWeight: 700, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="3" r="1"/><circle cx="5" cy="3" r="1"/><path d="M12 13v4M9 19l3-3v0"/></svg>
+                  CONNECTIONS
                 </div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                  {selectedEdges.slice(0, 12).map((e, i) => {
+                <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                  {selectedEdges.slice(0, 10).map((e, i) => {
                     const otherId = e.from === selected ? e.to : e.from;
                     const other   = nodeMap[otherId];
                     const meta    = EDGE_META[e.type] || EDGE_META.RELATED_TO;
@@ -891,51 +949,52 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
                     return (
                       <div key={i}
                         onClick={() => setSelected(otherId)}
-                        style={{ display: "flex", flexDirection: "column", gap: 3, padding: "7px 8px",
-                          background: T.raised, borderRadius: 8, border: `1px solid ${T.border}`,
-                          cursor: "pointer", transition: "border-color .15s" }}
-                        onMouseEnter={ev => ev.currentTarget.style.borderColor = T.borderMd}
-                        onMouseLeave={ev => ev.currentTarget.style.borderColor = T.border}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
-                          <div style={{ width: 7, height: 7, borderRadius: "50%", background: meta.color, flexShrink: 0 }} />
+                        style={{ display: "flex", flexDirection: "column", gap: 6, padding: "9px 10px",
+                          background: T.panel, borderRadius: 9, border: `1px solid ${T.border}`,
+                          cursor: "pointer", transition: "all .18s" }}
+                        onMouseEnter={ev => { ev.currentTarget.style.borderColor = meta.color; ev.currentTarget.style.background = `${meta.color}08`; }}
+                        onMouseLeave={ev => { ev.currentTarget.style.borderColor = T.border; ev.currentTarget.style.background = T.panel; }}>
+                        {/* Top row: color dot + label */}
+                        <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                          <div style={{ width: 8, height: 8, borderRadius: "50%", background: meta.color, flexShrink: 0, marginTop: 2 }} />
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: 10, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            <div style={{ fontSize: 11, fontWeight: 600, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", marginBottom: 2 }}>
                               {other.label}
                             </div>
-                            <div style={{ fontSize: 9, color: meta.color, fontFamily: "'DM Mono',monospace" }}>
-                              {isOut ? "→ " : "← "}{e.type.replace(/_/g, " ").toLowerCase()}
+                            <div style={{ fontSize: 9, color: meta.color, fontFamily: "'DM Mono',monospace", display: "flex", alignItems: "center", gap: 3 }}>
+                              <span style={{ fontSize: 10 }}>{isOut ? "→" : "←"}</span> {e.type.replace(/_/g, " ").toLowerCase()}
                             </div>
                           </div>
                         </div>
                         {/* Show shared entities inline for SHARES_ENTITY edges */}
                         {e.type === "SHARES_ENTITY" && e.shared && e.shared.length > 0 && (
-                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", paddingLeft: 14 }}>
-                            {e.shared.slice(0, 3).map((s, si) => (
-                              <span key={si} style={{ fontSize: 9, padding: "1px 5px", borderRadius: 8,
-                                background: `${T.coral}18`, color: T.coral,
-                                fontFamily: "'DM Mono',monospace", maxWidth: 80,
-                                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                                {s}
+                          <div style={{ display: "flex", gap: 3, flexWrap: "wrap", paddingLeft: 16 }}>
+                            {e.shared.slice(0, 2).map((s, si) => (
+                              <span key={si} style={{ fontSize: 8, padding: "2px 6px", borderRadius: 6,
+                                background: `${T.coral}18`, color: T.coral, border: `0.5px solid ${T.coral}40`,
+                                fontFamily: "'DM Mono',monospace" }}>
+                                {s.length > 12 ? s.slice(0, 10) + "…" : s}
                               </span>
                             ))}
+                            {e.shared.length > 2 && <span style={{ fontSize: 8, color: T.faint }}>+{e.shared.length - 2}</span>}
                           </div>
                         )}
                         {/* Show cluster for SAME_TOPIC edges */}
                         {e.type === "SAME_TOPIC" && e.cluster != null && (
-                          <div style={{ paddingLeft: 14 }}>
-                            <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 8,
-                              background: `${T.violet}18`, color: T.violet,
+                          <div style={{ paddingLeft: 16 }}>
+                            <span style={{ fontSize: 8, padding: "2px 6px", borderRadius: 6,
+                              background: `${T.violet}18`, color: T.violet, border: `0.5px solid ${T.violet}40`,
                               fontFamily: "'DM Mono',monospace" }}>
-                              cluster {e.cluster}
+                              ⊙ topic {e.cluster}
                             </span>
                           </div>
                         )}
                       </div>
                     );
                   })}
-                  {selectedEdges.length > 12 && (
-                    <div style={{ fontSize: 10, color: T.faint, textAlign: "center", padding: "4px 0" }}>
-                      +{selectedEdges.length - 12} more
+                  {selectedEdges.length > 10 && (
+                    <div style={{ fontSize: 9, color: T.faint, textAlign: "center", padding: "6px 0", opacity: 0.7 }}>
+                      +{selectedEdges.length - 10} more connections
                     </div>
                   )}
                 </div>
@@ -946,15 +1005,16 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
             {selectedNode && selectedNode.nodeType === "file" && (
               <>
                 {selectedNode.keywords && selectedNode.keywords.length > 0 && (
-                  <div style={{ marginTop: 12 }}>
-                    <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.07em", marginBottom: 7 }}>
-                      TOP KEYWORDS
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.1em", marginBottom: 8, fontWeight: 700, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20.59 13.41l-7.17-7.17a2 2 0 0 0-2.83 0L2 12a2 2 0 0 0 2.83 2.83l7.17-7.17"/><line x1="9" y1="9" x2="13.5" y2="4.5"/></svg>
+                      Keywords
                     </div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                       {selectedNode.keywords.map((kw, i) => (
-                        <span key={i} style={{ fontSize: 9, padding: "2px 6px", borderRadius: 8,
-                          background: T.raised, color: T.muted, border: `1px solid ${T.border}`,
-                          fontFamily: "'DM Mono',monospace" }}>
+                        <span key={i} style={{ fontSize: 9, padding: "3px 7px", borderRadius: 7,
+                          background: T.raised, color: T.text, border: `1px solid ${T.borderMd}`,
+                          fontFamily: "'DM Mono',monospace", fontWeight: 500 }}>
                           {kw}
                         </span>
                       ))}
@@ -962,16 +1022,17 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
                   </div>
                 )}
                 {selectedNode.topNames && selectedNode.topNames.length > 0 && (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.07em", marginBottom: 7 }}>
-                      NAMED ENTITIES
+                  <div style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.1em", marginBottom: 8, fontWeight: 700, textTransform: "uppercase", display: "flex", alignItems: "center", gap: 6 }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                      Entities
                     </div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
                       {selectedNode.topNames.map((nm, i) => (
-                        <span key={i} style={{ fontSize: 9, padding: "2px 6px", borderRadius: 8,
+                        <span key={i} style={{ fontSize: 9, padding: "3px 7px", borderRadius: 7,
                           background: `${T.coral}12`, color: T.coral,
-                          border: `1px solid ${T.coral}28`,
-                          fontFamily: "'DM Mono',monospace" }}>
+                          border: `1px solid ${T.coral}30`,
+                          fontFamily: "'DM Mono',monospace", fontWeight: 500 }}>
                           {nm}
                         </span>
                       ))}
@@ -979,15 +1040,16 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
                   </div>
                 )}
                 {selectedNode.cluster != null && (
-                  <div style={{ marginTop: 10 }}>
-                    <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.07em", marginBottom: 6 }}>
-                      TOPIC CLUSTER
+                  <div style={{ marginTop: 0, padding: "10px", background: `${T.violet}08`, border: `1px solid ${T.violet}30`, borderRadius: 9 }}>
+                    <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.1em", marginBottom: 6, fontWeight: 700, textTransform: "uppercase" }}>
+                      <svg style={{ display: "inline", marginRight: 5 }} width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="1"/><circle cx="19" cy="3" r="1"/><circle cx="5" cy="3" r="1"/><circle cx="21" cy="14" r="1"/><circle cx="3" cy="21" r="1"/><path d="M12 13v8M12 13L6.5 7.5M12 13l5.5-5.5M20 4l1 8M6 4l-1 8"/></svg>
+                      Topic
                     </div>
-                    <span style={{ fontSize: 10, padding: "3px 9px", borderRadius: 10,
+                    <span style={{ fontSize: 11, padding: "5px 10px", borderRadius: 8,
                       background: `${T.violet}18`, color: T.violet,
-                      border: `1px solid ${T.violet}30`,
-                      fontFamily: "'DM Mono',monospace" }}>
-                      cluster {selectedNode.cluster}
+                      border: `1px solid ${T.violet}40`,
+                      fontFamily: "'DM Mono',monospace", fontWeight: 600, display: "inline-block" }}>
+                      ⊙ Cluster {selectedNode.cluster}
                     </span>
                   </div>
                 )}
@@ -1082,6 +1144,682 @@ function IngestPanel({ onIngestComplete, stats }) {
             </div>);})}
         </div>
       </div>)}
+    </div>
+  );
+}
+
+function SimilarityPanel() {
+  const [files, setFiles] = useState([]);
+  const [selectedPaths, setSelectedPaths] = useState([]);
+  const [query, setQuery] = useState("");
+  const [loadingFiles, setLoadingFiles] = useState(false);
+  const [comparing, setComparing] = useState(false);
+  const [result, setResult] = useState(null);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const loadFiles = useCallback(async () => {
+    setLoadingFiles(true);
+    setErrorMsg("");
+    try {
+      const res = await fetch(`${API_BASE}/files`);
+      const data = await res.json();
+      const next = (data.files || []).sort((a, b) => a.path.localeCompare(b.path));
+      setFiles(next);
+      const validPaths = new Set(next.map(f => f.path));
+      setSelectedPaths(prev => prev.filter(path => validPaths.has(path)));
+    } catch {
+      setErrorMsg("Could not load files for similarity comparison.");
+    } finally {
+      setLoadingFiles(false);
+    }
+  }, []);
+
+  useEffect(() => { loadFiles(); }, [loadFiles]);
+
+  const togglePath = (path) => {
+    setSelectedPaths(prev => prev.includes(path) ? prev.filter(p => p !== path) : [...prev, path]);
+  };
+
+  const selectFiltered = () => {
+    const subset = filteredFiles.map(f => f.path);
+    if (!subset.length) return;
+    setSelectedPaths(prev => Array.from(new Set([...prev, ...subset])));
+  };
+
+  const clearSelection = () => {
+    setSelectedPaths([]);
+    setResult(null);
+  };
+
+  const runComparison = async () => {
+    if (selectedPaths.length < 2 || comparing) return;
+    setComparing(true);
+    setErrorMsg("");
+    try {
+      const res = await fetch(`${API_BASE}/similarity`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ paths: selectedPaths }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Similarity request failed.");
+      setResult(data);
+    } catch (e) {
+      setResult(null);
+      setErrorMsg(e.message || "Similarity request failed.");
+    } finally {
+      setComparing(false);
+    }
+  };
+
+  const filteredFiles = files.filter(f => {
+    const q = query.trim().toLowerCase();
+    if (!q) return true;
+    return f.path.toLowerCase().includes(q) || f.name.toLowerCase().includes(q);
+  });
+
+  const selectedCount = selectedPaths.length;
+
+  return (
+    <div style={{ height: "100%", display: "grid", gridTemplateColumns: "360px 1fr", minHeight: 0 }}>
+      <aside style={{ borderRight: `1px solid ${T.border}`, background: T.surface, display: "flex", flexDirection: "column", minHeight: 0 }}>
+        <div style={{ padding: "12px", borderBottom: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 6 }}>
+            <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 10px" }}>
+              <div style={{ fontSize: 9, color: T.faint, letterSpacing: "0.08em" }}>TOTAL FILES</div>
+              <div style={{ fontSize: 13, color: T.text, fontWeight: 700, marginTop: 2, fontFamily: "'DM Mono',monospace" }}>{files.length}</div>
+            </div>
+            <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 10px" }}>
+              <div style={{ fontSize: 9, color: T.faint, letterSpacing: "0.08em" }}>SELECTED</div>
+              <div style={{ fontSize: 13, color: T.text, fontWeight: 700, marginTop: 2, fontFamily: "'DM Mono',monospace" }}>{selectedCount}</div>
+            </div>
+          </div>
+
+          <input
+            value={query}
+            onChange={e => setQuery(e.target.value)}
+            placeholder="Filter files…"
+            style={{ width: "100%", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, color: T.text, fontSize: 12, padding: "8px 10px", outline: "none" }}
+          />
+
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={selectFiltered}
+              style={{ flex: 1, border: `1px solid ${T.border}`, borderRadius: 8, background: T.raised, color: T.muted, fontSize: 11, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: "inherit" }}>
+              Select filtered
+            </button>
+            <button onClick={clearSelection}
+              style={{ border: `1px solid ${T.border}`, borderRadius: 8, background: T.panel, color: T.muted, fontSize: 11, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: "inherit" }}>
+              Clear
+            </button>
+            <button onClick={loadFiles}
+              style={{ border: `1px solid ${T.border}`, borderRadius: 8, background: T.panel, color: T.muted, fontSize: 11, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: "inherit" }}>
+              Refresh
+            </button>
+          </div>
+
+          <button onClick={runComparison} disabled={selectedCount < 2 || comparing}
+            style={{ border: "none", borderRadius: 8, background: (selectedCount < 2 || comparing) ? T.faint : T.blue,
+              color: "#fff", fontSize: 11, fontWeight: 700, padding: "8px 12px", cursor: "pointer", fontFamily: "inherit" }}>
+            {comparing ? "Comparing…" : "Compare selected files"}
+          </button>
+
+          <div style={{ fontSize: 10, color: T.faint, lineHeight: 1.5 }}>
+            Select at least 2 files. Scores are context-aware (semantic + chunk alignment), so one or two shared keywords do not inflate similarity.
+          </div>
+        </div>
+
+        <div style={{ padding: "10px 12px 6px", fontSize: 10, color: T.faint, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span>FILES</span>
+          <span style={{ fontFamily: "'DM Mono',monospace" }}>{filteredFiles.length}/{files.length}</span>
+        </div>
+
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 8px 8px" }}>
+          {loadingFiles && <div style={{ padding: 10, fontSize: 12, color: T.muted }}>Loading files…</div>}
+          {!loadingFiles && filteredFiles.length === 0 && (
+            <Empty icon="∅" title="No files" sub="Try a different filter or add files first." />
+          )}
+          {!loadingFiles && filteredFiles.map((f) => {
+            const ec = EXT_COLOR[f.ext] || EXT_COLOR.txt;
+            const active = selectedPaths.includes(f.path);
+            return (
+              <button key={f.path} onClick={() => togglePath(f.path)}
+                style={{ width: "100%", marginBottom: 4, textAlign: "left", border: `1px solid ${active ? T.borderHi : T.border}`,
+                  borderRadius: 10, background: active ? T.raised : "transparent", color: T.text,
+                  padding: "8px 10px", cursor: "pointer", fontFamily: "inherit", transition: "all .15s" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ width: 14, color: active ? T.blue : T.faint, fontSize: 12 }}>{active ? "☑" : "☐"}</span>
+                  <Pill label={(f.ext || "txt").toUpperCase()} fg={ec.fg} bg={ec.bg} />
+                  <span style={{ fontSize: 12, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{f.name}</span>
+                </div>
+                <div style={{ marginTop: 4, fontSize: 10, color: T.faint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{f.path}</div>
+              </button>
+            );
+          })}
+        </div>
+      </aside>
+
+      <section style={{ display: "flex", flexDirection: "column", minHeight: 0, background: T.bg }}>
+        <div style={{ padding: "10px 12px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 10, color: T.faint, letterSpacing: "0.08em", flex: 1 }}>
+            {result ? `Compared ${result.count} files · ${result.pairs?.length || 0} pairs` : "Run a comparison to view pairwise semantic similarity"}
+          </span>
+        </div>
+
+        {errorMsg && (
+          <div style={{ margin: "10px 12px 0", padding: "8px 10px", borderRadius: 8,
+            background: T.coralDim, border: `1px solid ${T.coral}44`, color: T.coral, fontSize: 11 }}>
+            {errorMsg}
+          </div>
+        )}
+
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+          {!result && !comparing && (
+            <Empty icon="⋈" title="No comparison yet" sub="Select files and click Compare selected files." />
+          )}
+
+          {result && result.pairs?.length > 0 && result.pairs.map((pair, index) => {
+            const pct = Math.round((pair.score || 0) * 100);
+            const rankColor = pct >= 75 ? T.green : pct >= 55 ? T.amber : T.muted;
+            return (
+              <div key={`${pair.doc_a}-${pair.doc_b}-${index}`} className="fu"
+                style={{ background: T.raised, borderRadius: 12, border: `1px solid ${T.border}`, padding: "12px 13px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span style={{ fontSize: 12, color: T.text, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {pair.file_a?.filename} ↔ {pair.file_b?.filename}
+                  </span>
+                  <span style={{ fontSize: 17, color: rankColor, fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{pct}</span>
+                </div>
+
+                <div style={{ fontSize: 10, color: T.faint, marginBottom: 8 }}>{pair.label}</div>
+                <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.65, marginBottom: 10 }}>{pair.explanation}</div>
+
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
+                  <div>
+                    <Bar label="Semantic meaning" value={pair.metrics?.embedding_similarity || 0} color={T.blue} />
+                    <Bar label="Chunk context" value={pair.metrics?.chunk_alignment || 0} color={T.teal} />
+                  </div>
+                  <div>
+                    <Bar label="Entity overlap" value={pair.metrics?.entity_overlap || 0} color={T.violet} />
+                    <Bar label="Keyword overlap" value={pair.metrics?.keyword_overlap || 0} color={T.amber} />
+                  </div>
+                </div>
+
+                {pair.shared_keywords?.length > 0 && (
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8 }}>
+                    {pair.shared_keywords.slice(0, 8).map((kw) => (
+                      <Pill key={kw} label={kw} fg={T.teal} bg={T.tealDim} size={9} />
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+
+          {result && result.matrix?.length > 0 && (
+            <div style={{ background: T.raised, borderRadius: 12, border: `1px solid ${T.border}`, padding: "12px 13px" }}>
+              <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.08em", marginBottom: 8 }}>SIMILARITY MATRIX</div>
+              <div style={{ overflowX: "auto" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 520 }}>
+                  <thead>
+                    <tr>
+                      <th style={{ textAlign: "left", fontSize: 10, color: T.faint, padding: "6px 8px", borderBottom: `1px solid ${T.border}` }}>File</th>
+                      {result.matrix.map(col => (
+                        <th key={`h-${col.doc_id}`} style={{ textAlign: "center", fontSize: 10, color: T.faint, padding: "6px 8px", borderBottom: `1px solid ${T.border}` }}>
+                          {col.filename}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {result.matrix.map((row, ridx) => (
+                      <tr key={`r-${row.doc_id}`}>
+                        <td style={{ fontSize: 11, color: T.text, padding: "7px 8px", borderBottom: `1px solid ${T.border}` }}>{row.filename}</td>
+                        {(row.values || []).map((value, cidx) => {
+                          const pct = Math.round((value || 0) * 100);
+                          const color = pct >= 75 ? T.green : pct >= 55 ? T.amber : T.muted;
+                          return (
+                            <td key={`c-${ridx}-${cidx}`} style={{ textAlign: "center", padding: "7px 8px", borderBottom: `1px solid ${T.border}`, color, fontSize: 11, fontFamily: "'DM Mono',monospace" }}>
+                              {pct}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function FileManagerPanel({ onManaged }) {
+  const [files, setFiles] = useState([]);
+  const [loadingFiles, setLoadingFiles] = useState(false);
+  const [selectedPath, setSelectedPath] = useState("");
+  const [content, setContent] = useState("");
+  const [loadingContent, setLoadingContent] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [newPath, setNewPath] = useState("");
+  const [filter, setFilter] = useState("");
+  const [showEditableOnly, setShowEditableOnly] = useState(false);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [reindexing, setReindexing] = useState(false);
+  const [expandedFolders, setExpandedFolders] = useState(() => new Set(["."]));
+
+  const selectedFile = files.find(f => f.path === selectedPath) || null;
+
+  const loadFiles = useCallback(async (preferredPath = "") => {
+    setLoadingFiles(true);
+    setErrorMsg("");
+    try {
+      const res = await fetch(`${API_BASE}/files`);
+      const data = await res.json();
+      const next = (data.files || []).sort((a, b) => a.path.localeCompare(b.path));
+      setFiles(next);
+
+      if (!next.length) {
+        setSelectedPath("");
+        setContent("");
+        return;
+      }
+
+      const desired = preferredPath || selectedPath;
+      const keep = next.find(f => f.path === desired);
+      setSelectedPath(keep ? keep.path : next[0].path);
+    } catch {
+      setErrorMsg("Could not load files from backend.");
+    } finally {
+      setLoadingFiles(false);
+    }
+  }, [selectedPath]);
+
+  useEffect(() => { loadFiles(); }, [loadFiles]);
+
+  const loadContent = useCallback(async (path, editable) => {
+    if (!path) {
+      setContent("");
+      return;
+    }
+    if (!editable) {
+      setContent("This file type is not editable in-app. You can still delete it here.");
+      return;
+    }
+    setLoadingContent(true);
+    setErrorMsg("");
+    try {
+      const res = await fetch(`${API_BASE}/files/content?path=${encodeURIComponent(path)}`);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to load content.");
+      setContent(data.content || "");
+    } catch (e) {
+      setContent("");
+      setErrorMsg(e.message || "Failed to load file content.");
+    } finally {
+      setLoadingContent(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const file = files.find(f => f.path === selectedPath);
+    if (!file) {
+      setContent("");
+      return;
+    }
+    loadContent(file.path, file.editable);
+  }, [selectedPath, files, loadContent]);
+
+  const createFile = async () => {
+    let path = newPath.trim();
+    if (!path || creating) return;
+
+    const cleaned = path.replace(/\\/g, "/").replace(/\/+$/, "");
+    const base = cleaned.split("/").pop() || "";
+    if (base && !base.includes(".")) {
+      path = `${cleaned}.txt`;
+    } else {
+      path = cleaned;
+    }
+
+    setCreating(true);
+    setErrorMsg("");
+    try {
+      const res = await fetch(`${API_BASE}/files`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path, content: "" }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to create file.");
+      setNewPath("");
+      await loadFiles(data.path || path);
+      if (onManaged) onManaged();
+    } catch (e) {
+      setErrorMsg(e.message || "Failed to create file.");
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const saveFile = async () => {
+    if (!selectedFile || !selectedFile.editable || saving) return;
+    setSaving(true);
+    setErrorMsg("");
+    try {
+      const res = await fetch(`${API_BASE}/files/content`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: selectedFile.path, content }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to save file.");
+      await loadFiles(selectedFile.path);
+      if (onManaged) onManaged();
+    } catch (e) {
+      setErrorMsg(e.message || "Failed to save file.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const deleteFile = async () => {
+    if (!selectedFile) return;
+    const ok = window.confirm(`Delete ${selectedFile.path}? This cannot be undone.`);
+    if (!ok) return;
+    setErrorMsg("");
+    try {
+      const res = await fetch(`${API_BASE}/files?path=${encodeURIComponent(selectedFile.path)}`, {
+        method: "DELETE",
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to delete file.");
+      await loadFiles("");
+      if (onManaged) onManaged();
+    } catch (e) {
+      setErrorMsg(e.message || "Failed to delete file.");
+    }
+  };
+
+  const runReindex = async () => {
+    if (reindexing) return;
+    setReindexing(true);
+    setErrorMsg("");
+    try {
+      const res = await fetch(`${API_BASE}/reindex`, { method: "POST" });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to reindex.");
+      await loadFiles(selectedPath);
+      if (onManaged) onManaged();
+    } catch (e) {
+      setErrorMsg(e.message || "Failed to reindex.");
+    } finally {
+      setReindexing(false);
+    }
+  };
+
+  const visibleFiles = files.filter(f => {
+    const q = filter.trim().toLowerCase();
+    const matchesQuery = !q || f.path.toLowerCase().includes(q) || f.name.toLowerCase().includes(q);
+    const matchesEditable = !showEditableOnly || f.editable;
+    return matchesQuery && matchesEditable;
+  });
+
+  const buildTree = (items) => {
+    const root = { path: ".", folders: {}, files: [] };
+    for (const file of items) {
+      const parts = file.path.split("/").filter(Boolean);
+      const filename = parts.pop();
+      let cursor = root;
+      let currentPath = "";
+      for (const part of parts) {
+        currentPath = currentPath ? `${currentPath}/${part}` : part;
+        if (!cursor.folders[part]) {
+          cursor.folders[part] = { name: part, path: currentPath, folders: {}, files: [] };
+        }
+        cursor = cursor.folders[part];
+      }
+      if (filename) {
+        cursor.files.push(file);
+      }
+    }
+    return root;
+  };
+
+  const tree = buildTree(visibleFiles);
+
+  const countFolders = (node) => {
+    const children = Object.values(node.folders);
+    return children.reduce((sum, child) => sum + 1 + countFolders(child), 0);
+  };
+
+  const collectFolderPaths = (node) => {
+    const out = [];
+    for (const child of Object.values(node.folders)) {
+      out.push(child.path, ...collectFolderPaths(child));
+    }
+    return out;
+  };
+
+  const formatBytes = (bytes) => {
+    if (typeof bytes !== "number" || Number.isNaN(bytes)) return "—";
+    if (bytes < 1024) return `${bytes} B`;
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  };
+
+  const folderCount = countFolders(tree);
+  const editableCount = files.filter(f => f.editable).length;
+
+  const toggleFolder = (path) => {
+    setExpandedFolders(prev => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+  };
+
+  const expandAllFolders = () => {
+    setExpandedFolders(new Set([".", ...collectFolderPaths(tree)]));
+  };
+
+  const collapseAllFolders = () => {
+    setExpandedFolders(new Set(["."]));
+  };
+
+  const renderFolder = (node, depth = 0) => {
+    const isExpanded = expandedFolders.has(node.path);
+    const folders = Object.values(node.folders).sort((a, b) => a.name.localeCompare(b.name));
+    const folderFileCount = node.files.length + folders.reduce((sum, child) => sum + child.files.length, 0);
+    const folderIndent = 8 + depth * 10;
+
+    return (
+      <div key={node.path}>
+        {node.path !== "." && (
+          <button onClick={() => toggleFolder(node.path)}
+            style={{ width: "100%", marginBottom: 4, textAlign: "left", border: `1px solid ${isExpanded ? T.borderHi : T.border}`,
+              borderRadius: 10, background: isExpanded ? T.raised : T.panel, color: T.muted, padding: "8px 10px", cursor: "pointer",
+              fontFamily: "inherit", display: "flex", alignItems: "center", gap: 8, paddingLeft: folderIndent,
+              transition: "all .15s" }}>
+            <span style={{ fontSize: 10, color: isExpanded ? T.text : T.faint, width: 10 }}>{isExpanded ? "▾" : "▸"}</span>
+            <span style={{ fontSize: 12 }}>📁</span>
+            <span style={{ fontSize: 11, color: T.text, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
+            <span style={{ fontSize: 10, color: T.faint, fontFamily: "'DM Mono',monospace" }}>{folderFileCount}</span>
+          </button>
+        )}
+
+        {(node.path === "." || isExpanded) && (
+          <div style={node.path === "." ? undefined : { marginLeft: 10, paddingLeft: 9, borderLeft: `1px dashed ${T.border}` }}>
+            {folders.map(child => renderFolder(child, depth + (node.path === "." ? 0 : 1)))}
+            {node.files
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((f) => {
+                const ec = EXT_COLOR[f.ext] || EXT_COLOR.txt;
+                const active = selectedPath === f.path;
+                const fileIndent = 22 + depth * 10;
+                const glyph = FILE_GLYPH[f.ext] || "•";
+                return (
+                  <button key={f.path} onClick={() => setSelectedPath(f.path)}
+                    style={{ width: "100%", marginBottom: 4, textAlign: "left", border: `1px solid ${active ? T.borderHi : T.border}`,
+                      borderRadius: 10, background: active ? T.raised : "transparent", color: T.text,
+                      padding: "8px 10px", cursor: "pointer", fontFamily: "inherit", paddingLeft: fileIndent,
+                      transition: "all .15s" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                      <span style={{ width: 18, height: 18, borderRadius: 6, background: ec.bg, color: ec.fg,
+                        display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10,
+                        fontFamily: "'DM Mono',monospace", flexShrink: 0 }}>{glyph}</span>
+                      <Pill label={(f.ext || "txt").toUpperCase()} fg={ec.fg} bg={ec.bg} />
+                      <span style={{ fontSize: 12, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{f.name}</span>
+                      {!f.editable && <span style={{ fontSize: 9, color: T.faint }}>read-only</span>}
+                    </div>
+                    <div style={{ marginTop: 4, fontSize: 10, color: T.faint, display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{f.path}</span>
+                      <span style={{ fontFamily: "'DM Mono',monospace", flexShrink: 0 }}>{formatBytes(f.size)}</span>
+                    </div>
+                  </button>
+                );
+              })}
+          </div>
+        )}
+      </div>
+    );
+  };
+
+  return (
+    <div style={{ height: "100%", display: "grid", gridTemplateColumns: "380px 1fr", minHeight: 0 }}>
+      <aside style={{ borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", minHeight: 0, background: T.surface }}>
+        <div style={{ padding: "12px", borderBottom: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 8 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6 }}>
+            <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "7px 8px" }}>
+              <div style={{ fontSize: 9, color: T.faint, letterSpacing: "0.08em" }}>FILES</div>
+              <div style={{ fontSize: 13, color: T.text, fontWeight: 700, marginTop: 2, fontFamily: "'DM Mono',monospace" }}>{files.length}</div>
+            </div>
+            <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "7px 8px" }}>
+              <div style={{ fontSize: 9, color: T.faint, letterSpacing: "0.08em" }}>FOLDERS</div>
+              <div style={{ fontSize: 13, color: T.text, fontWeight: 700, marginTop: 2, fontFamily: "'DM Mono',monospace" }}>{folderCount}</div>
+            </div>
+            <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "7px 8px" }}>
+              <div style={{ fontSize: 9, color: T.faint, letterSpacing: "0.08em" }}>EDITABLE</div>
+              <div style={{ fontSize: 13, color: T.text, fontWeight: 700, marginTop: 2, fontFamily: "'DM Mono',monospace" }}>{editableCount}</div>
+            </div>
+          </div>
+
+          <input
+            value={newPath}
+            onChange={e => setNewPath(e.target.value)}
+            placeholder="New file path (e.g. notes/today.md)"
+            style={{ width: "100%", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, color: T.text, fontSize: 12, padding: "8px 10px", outline: "none" }}
+          />
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={createFile}
+              style={{ flex: 1, border: "none", borderRadius: 8, background: creating ? T.faint : T.blue, color: "#fff", fontSize: 11, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: "inherit" }}>
+              {creating ? "Creating…" : "Create file"}
+            </button>
+            <button onClick={() => loadFiles(selectedPath)}
+              style={{ border: `1px solid ${T.border}`, borderRadius: 8, background: T.raised, color: T.muted, fontSize: 11, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: "inherit" }}>
+              Refresh
+            </button>
+            <button onClick={runReindex}
+              style={{ border: "none", borderRadius: 8, background: reindexing ? T.faint : T.amber, color: "#111",
+                fontSize: 11, fontWeight: 700, padding: "7px 10px", cursor: "pointer", fontFamily: "inherit" }}>
+              {reindexing ? "Reindexing…" : "Reindex"}
+            </button>
+          </div>
+
+          <div style={{ display: "flex", gap: 6 }}>
+            <input
+              value={filter}
+              onChange={e => setFilter(e.target.value)}
+              placeholder="Filter files…"
+              style={{ width: "100%", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, color: T.text, fontSize: 12, padding: "8px 10px", outline: "none" }}
+            />
+            <button onClick={() => setShowEditableOnly(v => !v)}
+              style={{ border: `1px solid ${showEditableOnly ? T.borderHi : T.border}`, borderRadius: 8,
+                background: showEditableOnly ? T.raised : T.panel, color: showEditableOnly ? T.text : T.muted,
+                fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", padding: "0 9px", cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>
+              EDITABLE
+            </button>
+          </div>
+
+          <div style={{ display: "flex", gap: 6 }}>
+            <button onClick={expandAllFolders}
+              style={{ flex: 1, border: `1px solid ${T.border}`, borderRadius: 8, background: T.panel,
+                color: T.muted, fontSize: 10, fontWeight: 600, padding: "6px 10px", cursor: "pointer", fontFamily: "inherit" }}>
+              Expand all
+            </button>
+            <button onClick={collapseAllFolders}
+              style={{ flex: 1, border: `1px solid ${T.border}`, borderRadius: 8, background: T.panel,
+                color: T.muted, fontSize: 10, fontWeight: 600, padding: "6px 10px", cursor: "pointer", fontFamily: "inherit" }}>
+              Collapse all
+            </button>
+          </div>
+        </div>
+
+        <div style={{ padding: "10px 12px 6px", fontSize: 10, color: T.faint, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <span>FILE TREE</span>
+          <span style={{ fontFamily: "'DM Mono',monospace" }}>{visibleFiles.length}/{files.length}</span>
+        </div>
+
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 8px 8px" }}>
+          {loadingFiles && <div style={{ padding: 10, fontSize: 12, color: T.muted }}>Loading files…</div>}
+          {!loadingFiles && visibleFiles.length === 0 && (
+            <Empty icon="📁" title="No files" sub="Upload or create files to manage them here." />
+          )}
+          {!loadingFiles && visibleFiles.length > 0 && (
+            <div style={{ marginBottom: 6, border: `1px solid ${T.border}`, borderRadius: 10, background: T.panel, padding: "8px 10px" }}>
+              <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.07em", marginBottom: 3 }}>ROOT</div>
+              <div style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>test_documents</div>
+              <div style={{ marginTop: 3, fontSize: 10, color: T.faint }}>{folderCount} folders · {visibleFiles.length} files</div>
+            </div>
+          )}
+          {!loadingFiles && renderFolder(tree, 0)}
+        </div>
+      </aside>
+
+      <section style={{ display: "flex", flexDirection: "column", minHeight: 0, background: T.bg }}>
+        <div style={{ padding: "10px 12px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 10, color: T.faint, letterSpacing: "0.08em", flex: 1 }}>
+            {selectedFile ? selectedFile.path : "No file selected"}
+          </span>
+          <button onClick={saveFile} disabled={!selectedFile || !selectedFile.editable || saving}
+            style={{ border: "none", borderRadius: 8, background: (!selectedFile || !selectedFile.editable || saving) ? T.faint : T.green,
+              color: "#fff", fontSize: 11, fontWeight: 600, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit" }}>
+            {saving ? "Saving…" : "Save"}
+          </button>
+          <button onClick={deleteFile} disabled={!selectedFile}
+            style={{ border: "none", borderRadius: 8, background: selectedFile ? T.coral : T.faint,
+              color: "#fff", fontSize: 11, fontWeight: 600, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit" }}>
+            Delete
+          </button>
+        </div>
+
+        {errorMsg && (
+          <div style={{ margin: "10px 12px 0", padding: "8px 10px", borderRadius: 8,
+            background: T.coralDim, border: `1px solid ${T.coral}44`, color: T.coral, fontSize: 11 }}>
+            {errorMsg}
+          </div>
+        )}
+
+        <div style={{ flex: 1, minHeight: 0, padding: 12 }}>
+          {!selectedFile && <Empty icon="✎" title="Select a file" sub="Pick a file from the list to view or edit it." />}
+          {selectedFile && loadingContent && <div style={{ fontSize: 12, color: T.muted }}>Loading content…</div>}
+          {selectedFile && !loadingContent && (
+            <textarea
+              value={content}
+              onChange={e => setContent(e.target.value)}
+              readOnly={!selectedFile.editable}
+              style={{ width: "100%", height: "100%", resize: "none", borderRadius: 12,
+                border: `1px solid ${T.border}`, background: T.surface, color: selectedFile.editable ? T.text : T.muted,
+                fontSize: 12, lineHeight: 1.6, padding: "12px 14px", outline: "none",
+                fontFamily: "'DM Mono', monospace" }}
+            />
+          )}
+        </div>
+      </section>
     </div>
   );
 }
@@ -1316,7 +2054,7 @@ function ChatPopup({ targetFile, onClose, onClearTarget }) {
             </svg>
           </div>
           <div style={{ flex:1 }}>
-            <div style={{ fontSize:14, fontWeight:700, color:T.text, letterSpacing:"-0.01em" }}>MemoryGraph AI</div>
+            <div style={{ fontSize:14, fontWeight:700, color:T.text, letterSpacing:"-0.01em" }}>SemanticGraph AI</div>
             <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:1 }}>
               <Dot color={T.green} size={5} pulse/>
               <span style={{ fontSize:11, color:T.muted }}>
@@ -1516,7 +2254,9 @@ export default function App() {
 
   const tabs=[
     {id:"graph",  label:"Knowledge Graph",  icon:<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="12" cy="5" r="3"/><circle cx="5" cy="19" r="3"/><circle cx="19" cy="19" r="3"/><path d="M12 8v3M5 16l7-3M19 16l-7-3"/></svg>},
+    {id:"similarity", label:"Similarity", icon:<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><circle cx="7" cy="12" r="3"/><circle cx="17" cy="12" r="3"/><path d="M10 12h4"/></svg>},
     {id:"ingest", label:"File Ingestion",   icon:<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>},
+    {id:"manage", label:"File Manager",     icon:<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round"><path d="M22 11V7a2 2 0 0 0-2-2h-8l-2-2H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h8"/><path d="M18 16v6M15 19h6"/></svg>},
   ];
 
   return (
@@ -1537,7 +2277,7 @@ export default function App() {
               </svg>
             </div>
             <div>
-              <div style={{ fontSize:14,fontWeight:700,letterSpacing:"-0.02em",lineHeight:1.1 }}>MemoryGraph</div>
+              <div style={{ fontSize:14,fontWeight:700,letterSpacing:"-0.02em",lineHeight:1.1 }}>Semantic Memory Graph File Explorer</div>
             </div>
           </div>
           <div style={{ flex:1,maxWidth:780 }}>
@@ -1624,7 +2364,11 @@ export default function App() {
             <div style={{ flex:1,overflow:"hidden" }}>
               {tab==="graph"
                 ?<GraphPanel graphData={graphData} highlightId={highlightId}/>
-                :<IngestPanel onIngestComplete={()=>{fetchGraph();fetchStats();}} stats={stats}/>}
+                :tab==="similarity"
+                  ?<SimilarityPanel/>
+                :tab==="ingest"
+                  ?<IngestPanel onIngestComplete={()=>{fetchGraph();fetchStats();}} stats={stats}/>
+                  :<FileManagerPanel onManaged={()=>{fetchGraph();fetchStats();}}/>}
             </div>
           </main>
 
