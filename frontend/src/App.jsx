@@ -32,6 +32,9 @@ const EDGE_COLOR = {
   VERSION_OF:      T.blue,
   CO_LOCATED:      T.teal,
   RELATED_TO:      T.amber,
+  SHARES_ENTITY:   T.coral,
+  SAME_TOPIC:      T.violet,
+  FOLDER_SIMILAR:  T.green,
   PARENT_FOLDER:   T.faint,
   CONTAINS_FOLDER: T.faint,
 };
@@ -316,157 +319,705 @@ function DetailPanel({ result }) {
   );
 }
 
+/* ─── Force-directed graph simulation ───────────────────────────────────── */
+function useForceGraph(graphData, filter, showFolders, W, H) {
+  const [positions, setPositions] = useState({});
+  const simRef = useRef(null);
+  const rafRef = useRef(null);
+
+  useEffect(() => {
+    if (!graphData || !graphData.nodes.length) return;
+
+    // Build working node set — seed positions spread across the full canvas
+    const nodes = graphData.nodes
+      .filter(n => showFolders || n.nodeType !== "folder")
+      .map((n, i, arr) => {
+        // Golden-angle spiral seeding — distributes nodes evenly, avoids
+        // the random clumping that forces them to fight their way apart
+        const existing = positions[n.id];
+        if (existing) return { ...n, ...existing, vx: 0, vy: 0 };
+        const angle = i * 2.399963; // golden angle in radians
+        const radius = 60 + (i / arr.length) * Math.min(W, H) * 0.38;
+        return {
+          ...n,
+          x: W / 2 + radius * Math.cos(angle),
+          y: H / 2 + radius * Math.sin(angle),
+          vx: 0, vy: 0,
+        };
+      });
+
+    const nodeMap = {};
+    nodes.forEach(n => (nodeMap[n.id] = n));
+
+    const edges = graphData.edges.filter(e => {
+      if (!showFolders && (e.type === "PARENT_FOLDER" || e.type === "CONTAINS_FOLDER")) return false;
+      if (filter === "ALL") return true;
+      return e.type === filter;
+    }).filter(e => nodeMap[e.from] && nodeMap[e.to]);
+
+    // Force simulation — runs in a ref, writes positions via setState each frame
+    let tick = 0;
+    const ALPHA_DECAY = 0.012;   // slower decay → more time to spread out
+    let alpha = 1.0;
+
+    // Ideal spring distances — generous so connected nodes stay comfortably apart
+    const IDEAL = {
+      VERSION_OF:      160,  // was 90
+      CO_LOCATED:      200,  // was 110
+      RELATED_TO:      280,  // was 160
+      PARENT_FOLDER:   130,  // was 70
+      CONTAINS_FOLDER: 150,  // was 80
+    };
+    // Spring strengths — weaker so repulsion wins the spread battle
+    const STRENGTH = {
+      VERSION_OF:      0.08,  // was 0.18
+      CO_LOCATED:      0.06,  // was 0.12
+      RELATED_TO:      0.03,  // was 0.06
+      PARENT_FOLDER:   0.10,  // was 0.22
+      CONTAINS_FOLDER: 0.09,  // was 0.20
+    };
+
+    function step() {
+      if (alpha < 0.01) return;
+      alpha *= (1 - ALPHA_DECAY);
+      tick++;
+
+      // Repulsion between all node pairs — long-range, strong enough to win
+      for (let i = 0; i < nodes.length; i++) {
+        for (let j = i + 1; j < nodes.length; j++) {
+          const a = nodes[i], b = nodes[j];
+          const dx = b.x - a.x, dy = b.y - a.y;
+          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+          // Larger repulsion radius and stronger force — was repR*{55,80}, force*300
+          const repR  = (a.nodeType === "folder" || b.nodeType === "folder") ? 200 : 160;
+          if (dist < repR * 4) {
+            const force = (alpha * 900) / (dist * dist);
+            const fx = dx / dist * force, fy = dy / dist * force;
+            a.vx -= fx; a.vy -= fy;
+            b.vx += fx; b.vy += fy;
+          }
+        }
+      }
+
+      // Spring forces along edges
+      for (const e of edges) {
+        const a = nodeMap[e.from], b = nodeMap[e.to];
+        if (!a || !b) continue;
+        const dx = b.x - a.x, dy = b.y - a.y;
+        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
+        const ideal = IDEAL[e.type] || 130;
+        const str   = STRENGTH[e.type] || 0.1;
+        const delta = (dist - ideal) * str * alpha;
+        const fx = dx / dist * delta, fy = dy / dist * delta;
+        a.vx += fx; a.vy += fy;
+        b.vx -= fx; b.vy -= fy;
+      }
+
+      // Centre gravity — very gentle, just enough to keep orphan nodes on screen
+      const grav = 0.004 * alpha;  // was 0.015 — too strong, fights spread
+      for (const n of nodes) {
+        n.vx += (W / 2 - n.x) * grav;
+        n.vy += (H / 2 - n.y) * grav;
+      }
+
+      // Integrate + damping + bounds
+      const DAMP = 0.82;  // was 0.72 — less damping lets nodes travel further
+      for (const n of nodes) {
+        n.vx *= DAMP; n.vy *= DAMP;
+        n.x = Math.max(24, Math.min(W - 24, n.x + n.vx));
+        n.y = Math.max(24, Math.min(H - 24, n.y + n.vy));
+      }
+
+      // Snapshot to state every 2 ticks for smooth rendering
+      if (tick % 2 === 0) {
+        const snap = {};
+        nodes.forEach(n => { snap[n.id] = { x: n.x, y: n.y }; });
+        setPositions(snap);
+      }
+
+      rafRef.current = requestAnimationFrame(step);
+    }
+
+    rafRef.current = requestAnimationFrame(step);
+    simRef.current = { nodes, nodeMap };
+
+    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+  }, [graphData, filter, showFolders, W, H]);
+
+  return { positions, simNodes: simRef.current?.nodes || [] };
+}
+
 /* ─── Graph panel ─────────────────────────────────────────────────────────── */
-function GraphPanel({ graphData, highlightId }) {
-  const [hovered, setHovered] = useState(null);
-  const [filter,  setFilter]  = useState("ALL");
+function GraphPanel({ graphData, highlightId, onNodeSelect }) {
+  const containerRef  = useRef(null);
+  const [dims, setDims]           = useState({ w: 700, h: 480 });
+  const [filter, setFilter]       = useState("ALL");
   const [showFolders, setShowFolders] = useState(true);
+  const [hovered, setHovered]     = useState(null);
+  const [selected, setSelected]   = useState(null);
+  const [pan, setPan]             = useState({ x: 0, y: 0 });
+  const [zoom, setZoom]           = useState(1);
+  const [isDragging, setIsDragging]   = useState(false);
+  const [dragNode, setDragNode]   = useState(null);
+  const [pinnedPositions, setPinnedPositions] = useState({});
+  const panStart = useRef(null);
+  const dragStart = useRef(null);
 
-  if (!graphData||graphData.nodes.length===0)
-    return <Empty icon="⬡" title="No graph data" sub="Index some documents and the relationship graph will appear here"/>;
+  // Measure container
+  useEffect(() => {
+    if (!containerRef.current) return;
+    const ro = new ResizeObserver(([e]) => {
+      setDims({ w: e.contentRect.width, h: e.contentRect.height });
+    });
+    ro.observe(containerRef.current);
+    return () => ro.disconnect();
+  }, []);
 
-  const nodeMap={};
-  graphData.nodes.forEach(n=>(nodeMap[n.id]=n));
+  const { positions } = useForceGraph(graphData, filter, showFolders, dims.w, dims.h);
 
-  // Filter edges
-  const FILE_EDGE_TYPES = ["VERSION_OF","CO_LOCATED","RELATED_TO"];
-  const visibleEdges = graphData.edges.filter(e => {
-    if (!showFolders && (e.type==="PARENT_FOLDER"||e.type==="CONTAINS_FOLDER")) return false;
-    if (filter==="ALL") return true;
-    return e.type===filter;
+  if (!graphData || !graphData.nodes.length)
+    return <Empty icon="⬡" title="No graph data" sub="Index some documents first — the knowledge graph will appear here" />;
+
+  // Merge simulated positions with user-pinned positions
+  const merged = {};
+  graphData.nodes.forEach(n => {
+    const p = pinnedPositions[n.id] || positions[n.id];
+    if (p) merged[n.id] = p;
   });
 
-  // Hide folder nodes when toggled off
-  const visibleNodes = graphData.nodes.filter(n =>
-    showFolders || n.nodeType !== "folder"
-  );
+  const nodeMap = {};
+  graphData.nodes.forEach(n => { if (merged[n.id]) nodeMap[n.id] = { ...n, ...merged[n.id] }; });
 
-  const filterButtons = ["ALL", ...FILE_EDGE_TYPES];
+  const visibleNodes = graphData.nodes.filter(n =>
+    (showFolders || n.nodeType !== "folder") && merged[n.id]
+  );
+  const visibleEdges = graphData.edges.filter(e => {
+    if (!showFolders && (e.type === "PARENT_FOLDER" || e.type === "CONTAINS_FOLDER")) return false;
+    if (filter !== "ALL" && e.type !== filter) return false;
+    return nodeMap[e.from] && nodeMap[e.to];
+  });
+
+  // Selected node neighbours
+  const neighbourIds = new Set();
+  if (selected) {
+    graphData.edges.forEach(e => {
+      if (e.from === selected) neighbourIds.add(e.to);
+      if (e.to   === selected) neighbourIds.add(e.from);
+    });
+  }
+
+  // Selected node details
+  const selectedNode = selected ? nodeMap[selected] : null;
+  const selectedEdges = selected
+    ? graphData.edges.filter(e => e.from === selected || e.to === selected)
+    : [];
+
+  // ── Interaction handlers ──────────────────────────────────────────────
+  const toSVG = (clientX, clientY) => {
+    const rect = containerRef.current?.getBoundingClientRect();
+    if (!rect) return { x: 0, y: 0 };
+    return {
+      x: (clientX - rect.left - pan.x) / zoom,
+      y: (clientY - rect.top  - pan.y) / zoom,
+    };
+  };
+
+  const handleCanvasMouseDown = (e) => {
+    if (dragNode) return;
+    panStart.current = { mx: e.clientX, my: e.clientY, px: pan.x, py: pan.y };
+    setIsDragging(false);
+  };
+
+  const handleCanvasMouseMove = (e) => {
+    if (dragNode) {
+      const sv = toSVG(e.clientX, e.clientY);
+      setPinnedPositions(p => ({ ...p, [dragNode]: { x: sv.x, y: sv.y } }));
+      return;
+    }
+    if (!panStart.current) return;
+    const dx = e.clientX - panStart.current.mx;
+    const dy = e.clientY - panStart.current.my;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) setIsDragging(true);
+    setPan({ x: panStart.current.px + dx, y: panStart.current.py + dy });
+  };
+
+  const handleCanvasMouseUp = () => {
+    panStart.current = null;
+    setDragNode(null);
+    setIsDragging(false);
+  };
+
+  const handleWheel = (e) => {
+    e.preventDefault();
+    const factor = e.deltaY < 0 ? 1.12 : 0.88;
+    setZoom(z => Math.max(0.3, Math.min(3, z * factor)));
+  };
+
+  const handleNodeMouseDown = (e, nodeId) => {
+    e.stopPropagation();
+    dragStart.current = { id: nodeId, moved: false };
+    setDragNode(nodeId);
+  };
+
+  const handleNodeClick = (e, nodeId) => {
+    e.stopPropagation();
+    if (isDragging) return;
+    setSelected(s => s === nodeId ? null : nodeId);
+    if (onNodeSelect) onNodeSelect(nodeMap[nodeId]);
+  };
+
+  const handleZoomBtn = (dir) => setZoom(z => Math.max(0.3, Math.min(3, z * (dir > 0 ? 1.25 : 0.8))));
+  const handleReset   = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+
+  // Edge path — curved for semantic, straight for structural
+  const edgePath = (ax, ay, bx, by, type) => {
+    if (type === "PARENT_FOLDER" || type === "CONTAINS_FOLDER") {
+      return `M${ax},${ay}L${bx},${by}`;
+    }
+    const mx = (ax + bx) / 2, my = (ay + by) / 2;
+    const dx = bx - ax, dy = by - ay;
+    const perp = 0.18;
+    const cx = mx - dy * perp, cy = my + dx * perp;
+    return `M${ax},${ay}Q${cx},${cy} ${bx},${by}`;
+  };
+
+  const EDGE_META = {
+    VERSION_OF:      { color: T.blue,   width: 2.5, dash: null,    label: "Version of"      },
+    CO_LOCATED:      { color: T.teal,   width: 1.8, dash: null,    label: "Co-located"      },
+    RELATED_TO:      { color: T.amber,  width: 1.5, dash: "6 3",   label: "Related to"      },
+    SHARES_ENTITY:   { color: T.coral,  width: 2.2, dash: null,    label: "Shares entity"   },
+    SAME_TOPIC:      { color: T.violet, width: 1.8, dash: "4 2",   label: "Same topic"      },
+    FOLDER_SIMILAR:  { color: T.green,  width: 1.2, dash: "8 4",   label: "Folder similar"  },
+    PARENT_FOLDER:   { color: T.faint,  width: 0.8, dash: null,    label: "In folder"       },
+    CONTAINS_FOLDER: { color: T.faint,  width: 0.6, dash: "3 3",   label: "Contains"        },
+  };
+
+  const FILE_ICON_PATH = "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6";
+  const FOLDER_ICON_PATH = "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z";
 
   return (
-    <div style={{ display:"flex",flexDirection:"column",height:"100%",padding:"14px 16px" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
 
-      {/* Controls row */}
-      <div style={{ display:"flex",gap:6,marginBottom:12,flexWrap:"wrap",flexShrink:0,alignItems:"center" }}>
-        {filterButtons.map(f=>{
-          const active=filter===f; const c=EDGE_COLOR[f]||T.blue;
-          return(
-            <button key={f} onClick={()=>setFilter(f)}
-              style={{ fontSize:10,fontWeight:600,letterSpacing:"0.05em",padding:"4px 12px",borderRadius:20,
-                border:`1px solid ${active?c:T.border}`,background:active?`${c}18`:"transparent",
-                color:active?c:T.muted,cursor:"pointer",fontFamily:"inherit",transition:"all .15s" }}>
-              {f==="ALL"?"All edges":f.replace(/_/g," ")}
+      {/* ── Toolbar ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px",
+        borderBottom: `1px solid ${T.border}`, flexShrink: 0, flexWrap: "wrap" }}>
+
+        {/* Edge filters */}
+        {["ALL", "VERSION_OF", "CO_LOCATED", "RELATED_TO", "SHARES_ENTITY", "SAME_TOPIC"].map(f => {
+          const active = filter === f;
+          const c = EDGE_COLOR[f] || T.blue;
+          return (
+            <button key={f} onClick={() => setFilter(f)}
+              style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.05em", padding: "4px 11px",
+                borderRadius: 20, border: `1px solid ${active ? c : T.border}`,
+                background: active ? `${c}1a` : "transparent",
+                color: active ? c : T.muted, cursor: "pointer", fontFamily: "inherit",
+                transition: "all .15s" }}>
+              {f === "ALL" ? "All" : f.replace(/_/g, " ")}
             </button>
           );
         })}
 
         {/* Folder toggle */}
-        <button onClick={()=>setShowFolders(v=>!v)}
-          style={{ marginLeft:"auto", fontSize:10, fontWeight:600, padding:"4px 12px", borderRadius:20,
-            border:`1px solid ${showFolders?T.borderHi:T.border}`,
-            background:showFolders?T.raised:"transparent",
-            color:showFolders?T.text:T.muted, cursor:"pointer", fontFamily:"inherit",
-            display:"flex", alignItems:"center", gap:5, transition:"all .15s" }}>
+        <button onClick={() => setShowFolders(v => !v)}
+          style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 10, fontWeight: 600,
+            padding: "4px 11px", borderRadius: 20, cursor: "pointer", fontFamily: "inherit",
+            border: `1px solid ${showFolders ? T.borderHi : T.border}`,
+            background: showFolders ? T.raised : "transparent",
+            color: showFolders ? T.text : T.muted, transition: "all .15s" }}>
           <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            <path d={FOLDER_ICON_PATH} />
           </svg>
-          {showFolders?"Hide folders":"Show folders"}
+          Folders
+        </button>
+
+        <div style={{ flex: 1 }} />
+
+        {/* Node count badge */}
+        <span style={{ fontSize: 10, color: T.faint, fontFamily: "'DM Mono',monospace" }}>
+          {visibleNodes.length} nodes · {visibleEdges.length} edges
+        </span>
+
+        {/* Zoom controls */}
+        {[["−", -1], ["+", 1]].map(([label, dir]) => (
+          <button key={label} onClick={() => handleZoomBtn(dir)}
+            style={{ width: 26, height: 26, borderRadius: 7, border: `1px solid ${T.border}`,
+              background: T.raised, color: T.muted, fontSize: 14, cursor: "pointer",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              fontFamily: "inherit", transition: "all .15s" }}
+            onMouseEnter={e => { e.currentTarget.style.color = T.text; e.currentTarget.style.borderColor = T.borderMd; }}
+            onMouseLeave={e => { e.currentTarget.style.color = T.muted; e.currentTarget.style.borderColor = T.border; }}>
+            {label}
+          </button>
+        ))}
+        <button onClick={handleReset}
+          style={{ fontSize: 10, fontWeight: 600, padding: "4px 10px", borderRadius: 7,
+            border: `1px solid ${T.border}`, background: T.raised, color: T.muted,
+            cursor: "pointer", fontFamily: "inherit", transition: "all .15s" }}
+          onMouseEnter={e => { e.currentTarget.style.color = T.text; }}
+          onMouseLeave={e => { e.currentTarget.style.color = T.muted; }}>
+          Reset
         </button>
       </div>
 
-      {/* SVG canvas */}
-      <div style={{ flex:1,borderRadius:12,overflow:"hidden",border:`1px solid ${T.border}`,
-        background:`radial-gradient(ellipse at 40% 40%,${T.raised} 0%,${T.panel} 100%)` }}>
-        <svg width="100%" height="100%" viewBox="0 0 560 420" style={{ display:"block" }}>
-          <defs>
-            <filter id="glow"><feGaussianBlur stdDeviation="3" result="blur"/>
-              <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
-            </filter>
-          </defs>
+      {/* ── Canvas + inspector ── */}
+      <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden" }}>
 
-          {/* Edges */}
-          {visibleEdges.map((e,i)=>{
-            const a=nodeMap[e.from],b=nodeMap[e.to];
-            if(!a||!b||!a.x||!b.x) return null;
-            const c=EDGE_COLOR[e.type]||T.muted;
-            const hi=hovered===a.id||hovered===b.id||highlightId===a.id||highlightId===b.id;
-            const isStructural=e.type==="PARENT_FOLDER"||e.type==="CONTAINS_FOLDER";
-            return(
-              <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                stroke={c}
-                strokeWidth={isStructural?0.6:hi?e.weight*3.5:e.weight*1.4}
-                strokeOpacity={isStructural?0.25:hi?.85:.25}
-                strokeDasharray={e.type==="RELATED_TO"?"5 4":e.type==="CONTAINS_FOLDER"?"3 3":undefined}
-                style={{ transition:"stroke-opacity .2s,stroke-width .2s" }}/>
-            );
-          })}
+        {/* SVG canvas */}
+        <div ref={containerRef} style={{ flex: 1, position: "relative", overflow: "hidden",
+          background: `radial-gradient(ellipse at 35% 40%, ${T.raised} 0%, ${T.bg} 65%)`,
+          cursor: isDragging ? "grabbing" : dragNode ? "grabbing" : "grab" }}
+          onMouseDown={handleCanvasMouseDown}
+          onMouseMove={handleCanvasMouseMove}
+          onMouseUp={handleCanvasMouseUp}
+          onMouseLeave={handleCanvasMouseUp}
+          onWheel={handleWheel}>
 
-          {/* Nodes */}
-          {visibleNodes.map(n=>{
-            if(!n.x||!n.y) return null;
-            const hi=hovered===n.id||highlightId===n.id;
-            const isFolder=n.nodeType==="folder";
-            const r=hi?(n.size||10)+4:(n.size||10);
+          <svg width={dims.w} height={dims.h} style={{ display: "block", userSelect: "none" }}>
+            <defs>
+              <filter id="glow-blue"  x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+              <filter id="glow-teal"  x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+              <filter id="glow-amber" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge>
+              </filter>
+              {/* Arrowhead markers */}
+              {Object.entries(EDGE_META).map(([type, meta]) => (
+                <marker key={type} id={`arrow-${type}`} markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto">
+                  <path d="M0,0 L0,6 L8,3 z" fill={meta.color} fillOpacity={0.7} />
+                </marker>
+              ))}
+            </defs>
 
-            return(
-              <g key={n.id}
-                onMouseEnter={()=>setHovered(n.id)}
-                onMouseLeave={()=>setHovered(null)}
-                style={{ cursor:"pointer" }}>
+            <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
 
-                {/* Glow ring */}
-                {hi&&!isFolder&&<circle cx={n.x} cy={n.y} r={r+8} fill={n.color} fillOpacity={0.10}/>}
+              {/* ── Edges ── */}
+              {visibleEdges.map((e, i) => {
+                const a = nodeMap[e.from], b = nodeMap[e.to];
+                if (!a || !b) return null;
+                const meta = EDGE_META[e.type] || EDGE_META.RELATED_TO;
+                const isStructural = e.type === "PARENT_FOLDER" || e.type === "CONTAINS_FOLDER";
+                const isActive = selected
+                  ? (e.from === selected || e.to === selected)
+                  : (hovered === e.from || hovered === e.to);
+                const opacity = selected
+                  ? (isActive ? 0.9 : 0.08)
+                  : isStructural ? 0.18 : isActive ? 0.85 : 0.22;
+                const strokeW = isStructural ? meta.width
+                  : isActive ? meta.width * 1.8 : meta.width;
 
-                {/* Shape: square for folders, circle for files */}
-                {isFolder
-                  ? <rect x={n.x-r} y={n.y-r} width={r*2} height={r*2} rx={3}
-                      fill={hi?`${T.violet}44`:`${T.violet}26`}
-                      stroke={hi?T.violet:`${T.violet}b3`}
-                      strokeWidth={hi?1.7:1.2}
-                      style={{ transition:"all .18s" }}/>
-                  : <circle cx={n.x} cy={n.y} r={r} fill={n.color} fillOpacity={hi?1:.7}
-                      filter={hi?"url(#glow)":undefined}
-                      style={{ transition:"all .18s" }}/>
-                }
+                return (
+                  <path key={i}
+                    d={edgePath(a.x, a.y, b.x, b.y, e.type)}
+                    fill="none"
+                    stroke={meta.color}
+                    strokeWidth={strokeW}
+                    strokeOpacity={opacity}
+                    strokeDasharray={meta.dash || undefined}
+                    markerEnd={!isStructural ? `url(#arrow-${e.type})` : undefined}
+                    style={{ transition: "stroke-opacity .25s, stroke-width .25s" }}
+                  />
+                );
+              })}
 
-                {/* Tooltip */}
-                {hi&&(
-                  <g>
-                    <rect x={n.x+r+8} y={n.y-11} rx={6}
-                      width={Math.min((n.label||"").length*6+16,200)} height={21}
-                      fill={T.surface} stroke={T.borderMd} strokeWidth={1}/>
-                    <text x={n.x+r+16} y={n.y+3.5}
-                      fill={isFolder?T.violet:T.text} fontSize={10}
-                      fontFamily="'DM Sans',sans-serif" fontWeight="500">
-                      {(n.label||"").length>27?(n.label||"").slice(0,25)+"…":(n.label||"")}
-                      {isFolder?" 📁":""}
-                    </text>
+              {/* ── Nodes ── */}
+              {visibleNodes.map(n => {
+                const pos = merged[n.id];
+                if (!pos) return null;
+                const { x, y } = pos;
+                const isFolder  = n.nodeType === "folder";
+                const isSel     = selected === n.id;
+                const isHov     = hovered  === n.id;
+                const isNeighbour = neighbourIds.has(n.id);
+                const isHighlight = highlightId === n.id;
+                const dimmed    = selected && !isSel && !isNeighbour && !isFolder;
+                const r         = isFolder ? 9 : (n.size || 10);
+                const ec        = EXT_COLOR[n.ext] || { fg: n.color || T.blue, bg: T.blueDim };
+
+                return (
+                  <g key={n.id}
+                    onMouseEnter={() => setHovered(n.id)}
+                    onMouseLeave={() => setHovered(null)}
+                    onMouseDown={e => handleNodeMouseDown(e, n.id)}
+                    onClick={e => handleNodeClick(e, n.id)}
+                    style={{ cursor: "pointer" }}>
+
+                    {/* Selection / highlight ring */}
+                    {(isSel || isHighlight) && (
+                      <circle cx={x} cy={y} r={r + 9}
+                        fill="none" stroke={isSel ? n.color : T.teal}
+                        strokeWidth={1.5} strokeOpacity={0.5}
+                        strokeDasharray={isSel ? undefined : "4 3"} />
+                    )}
+
+                    {/* Outer glow for selected */}
+                    {isSel && (
+                      <circle cx={x} cy={y} r={r + 14}
+                        fill={n.color} fillOpacity={0.08} />
+                    )}
+
+                    {/* Body */}
+                    {isFolder ? (
+                      <rect x={x - r} y={y - r} width={r * 2} height={r * 2} rx={4}
+                        fill={isSel || isHov ? T.borderHi : T.faint}
+                        fillOpacity={dimmed ? 0.2 : isSel ? 0.9 : isHov ? 0.7 : 0.45}
+                        stroke={isSel ? T.borderHi : T.border} strokeWidth={0.75}
+                        style={{ transition: "all .2s" }} />
+                    ) : (
+                      <circle cx={x} cy={y} r={r}
+                        fill={n.color}
+                        fillOpacity={dimmed ? 0.15 : isSel ? 1 : isHov ? 0.92 : 0.72}
+                        filter={isSel ? "url(#glow-blue)" : undefined}
+                        style={{ transition: "all .2s" }} />
+                    )}
+
+                    {/* Folder icon */}
+                    {isFolder && (
+                      <svg x={x - 6} y={y - 6} width={12} height={12} viewBox="0 0 24 24"
+                        fill="none" stroke={T.muted} strokeWidth="2" strokeLinecap="round">
+                        <path d={FOLDER_ICON_PATH} />
+                      </svg>
+                    )}
+
+                    {/* File extension badge on larger nodes */}
+                    {!isFolder && r >= 12 && (
+                      <text x={x} y={y + 4} textAnchor="middle"
+                        fill="#fff" fontSize={r > 13 ? 8 : 7} fontWeight="700"
+                        fontFamily="'DM Mono',monospace" fillOpacity={0.9}>
+                        {(n.ext || "").toUpperCase().slice(0, 4)}
+                      </text>
+                    )}
+
+                    {/* Label — always shown for selected/hovered, shown when not dimmed for others */}
+                    {(isSel || isHov || (!dimmed && !isFolder)) && (
+                      <text x={x} y={y + r + 13} textAnchor="middle"
+                        fill={dimmed ? T.faint : isFolder ? T.muted : T.text}
+                        fontSize={isFolder ? 9 : 10}
+                        fontFamily="'DM Sans',sans-serif" fontWeight={isSel ? "600" : "400"}
+                        fillOpacity={dimmed ? 0.3 : 1}
+                        style={{ pointerEvents: "none", transition: "fill-opacity .2s" }}>
+                        {(n.label || "").length > 18 ? (n.label || "").slice(0, 16) + "…" : n.label}
+                      </text>
+                    )}
                   </g>
+                );
+              })}
+            </g>
+          </svg>
+
+          {/* Zoom hint */}
+          <div style={{ position: "absolute", bottom: 10, left: 12, fontSize: 10,
+            color: T.faint, fontFamily: "'DM Mono',monospace", pointerEvents: "none" }}>
+            Scroll to zoom · Drag to pan · Click node to inspect
+          </div>
+
+          {/* Zoom level indicator */}
+          <div style={{ position: "absolute", bottom: 10, right: 12, fontSize: 10,
+            color: T.faint, fontFamily: "'DM Mono',monospace", pointerEvents: "none" }}>
+            {Math.round(zoom * 100)}%
+          </div>
+        </div>
+
+        {/* ── Node inspector panel ── */}
+        {selectedNode && (
+          <div className="fu" style={{ width: 210, flexShrink: 0, borderLeft: `1px solid ${T.border}`,
+            background: T.surface, overflowY: "auto", padding: "14px 14px" }}>
+
+            {/* Header */}
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+              <span style={{ fontSize: 10, color: T.faint, letterSpacing: "0.08em", fontWeight: 600 }}>NODE INSPECTOR</span>
+              <button onClick={() => setSelected(null)}
+                style={{ background: "transparent", border: "none", cursor: "pointer",
+                  color: T.faint, padding: 2, display: "flex" }}
+                onMouseEnter={e => e.currentTarget.style.color = T.text}
+                onMouseLeave={e => e.currentTarget.style.color = T.faint}>
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <path d="M18 6 6 18M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Node identity */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+              {selectedNode.nodeType === "folder" ? (
+                <div style={{ width: 36, height: 36, borderRadius: 8, background: T.raised,
+                  border: `1px solid ${T.borderMd}`, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={T.muted} strokeWidth="1.8" strokeLinecap="round">
+                    <path d={FOLDER_ICON_PATH} />
+                  </svg>
+                </div>
+              ) : (
+                <div style={{ width: 36, height: 36, borderRadius: 8,
+                  background: (EXT_COLOR[selectedNode.ext] || { bg: T.blueDim }).bg,
+                  display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: (EXT_COLOR[selectedNode.ext] || { fg: T.blue }).fg,
+                    fontFamily: "'DM Mono',monospace" }}>
+                    {(selectedNode.ext || "?").toUpperCase()}
+                  </span>
+                </div>
+              )}
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: T.text, wordBreak: "break-all", lineHeight: 1.4 }}>
+                  {selectedNode.label}
+                </div>
+                <div style={{ fontSize: 10, color: T.faint, marginTop: 3, fontFamily: "'DM Mono',monospace" }}>
+                  {selectedNode.nodeType === "folder" ? "📁 folder" : selectedNode.docType || "file"}
+                </div>
+                {selectedNode.relPath && (
+                  <div style={{ fontSize: 9, color: T.faint, marginTop: 2, fontFamily: "'DM Mono',monospace",
+                    wordBreak: "break-all", lineHeight: 1.5 }}>
+                    {selectedNode.relPath}
+                  </div>
                 )}
-              </g>
-            );
-          })}
-        </svg>
+              </div>
+            </div>
+
+            {/* Connections */}
+            {selectedEdges.length > 0 && (
+              <div>
+                <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.07em", marginBottom: 8 }}>
+                  CONNECTIONS ({selectedEdges.length})
+                </div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                  {selectedEdges.slice(0, 12).map((e, i) => {
+                    const otherId = e.from === selected ? e.to : e.from;
+                    const other   = nodeMap[otherId];
+                    const meta    = EDGE_META[e.type] || EDGE_META.RELATED_TO;
+                    const isOut   = e.from === selected;
+                    if (!other) return null;
+                    return (
+                      <div key={i}
+                        onClick={() => setSelected(otherId)}
+                        style={{ display: "flex", flexDirection: "column", gap: 3, padding: "7px 8px",
+                          background: T.raised, borderRadius: 8, border: `1px solid ${T.border}`,
+                          cursor: "pointer", transition: "border-color .15s" }}
+                        onMouseEnter={ev => ev.currentTarget.style.borderColor = T.borderMd}
+                        onMouseLeave={ev => ev.currentTarget.style.borderColor = T.border}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+                          <div style={{ width: 7, height: 7, borderRadius: "50%", background: meta.color, flexShrink: 0 }} />
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 10, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                              {other.label}
+                            </div>
+                            <div style={{ fontSize: 9, color: meta.color, fontFamily: "'DM Mono',monospace" }}>
+                              {isOut ? "→ " : "← "}{e.type.replace(/_/g, " ").toLowerCase()}
+                            </div>
+                          </div>
+                        </div>
+                        {/* Show shared entities inline for SHARES_ENTITY edges */}
+                        {e.type === "SHARES_ENTITY" && e.shared && e.shared.length > 0 && (
+                          <div style={{ display: "flex", gap: 4, flexWrap: "wrap", paddingLeft: 14 }}>
+                            {e.shared.slice(0, 3).map((s, si) => (
+                              <span key={si} style={{ fontSize: 9, padding: "1px 5px", borderRadius: 8,
+                                background: `${T.coral}18`, color: T.coral,
+                                fontFamily: "'DM Mono',monospace", maxWidth: 80,
+                                overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                {s}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {/* Show cluster for SAME_TOPIC edges */}
+                        {e.type === "SAME_TOPIC" && e.cluster != null && (
+                          <div style={{ paddingLeft: 14 }}>
+                            <span style={{ fontSize: 9, padding: "1px 5px", borderRadius: 8,
+                              background: `${T.violet}18`, color: T.violet,
+                              fontFamily: "'DM Mono',monospace" }}>
+                              cluster {e.cluster}
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                  {selectedEdges.length > 12 && (
+                    <div style={{ fontSize: 10, color: T.faint, textAlign: "center", padding: "4px 0" }}>
+                      +{selectedEdges.length - 12} more
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* Entity & cluster summary for file nodes */}
+            {selectedNode && selectedNode.nodeType === "file" && (
+              <>
+                {selectedNode.keywords && selectedNode.keywords.length > 0 && (
+                  <div style={{ marginTop: 12 }}>
+                    <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.07em", marginBottom: 7 }}>
+                      TOP KEYWORDS
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                      {selectedNode.keywords.map((kw, i) => (
+                        <span key={i} style={{ fontSize: 9, padding: "2px 6px", borderRadius: 8,
+                          background: T.raised, color: T.muted, border: `1px solid ${T.border}`,
+                          fontFamily: "'DM Mono',monospace" }}>
+                          {kw}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {selectedNode.topNames && selectedNode.topNames.length > 0 && (
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.07em", marginBottom: 7 }}>
+                      NAMED ENTITIES
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                      {selectedNode.topNames.map((nm, i) => (
+                        <span key={i} style={{ fontSize: 9, padding: "2px 6px", borderRadius: 8,
+                          background: `${T.coral}12`, color: T.coral,
+                          border: `1px solid ${T.coral}28`,
+                          fontFamily: "'DM Mono',monospace" }}>
+                          {nm}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+                {selectedNode.cluster != null && (
+                  <div style={{ marginTop: 10 }}>
+                    <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.07em", marginBottom: 6 }}>
+                      TOPIC CLUSTER
+                    </div>
+                    <span style={{ fontSize: 10, padding: "3px 9px", borderRadius: 10,
+                      background: `${T.violet}18`, color: T.violet,
+                      border: `1px solid ${T.violet}30`,
+                      fontFamily: "'DM Mono',monospace" }}>
+                      cluster {selectedNode.cluster}
+                    </span>
+                  </div>
+                )}
+              </>
+            )}
+          </div>
+        )}
       </div>
 
-      {/* Legend */}
-      <div style={{ display:"flex",gap:14,marginTop:11,flexWrap:"wrap",flexShrink:0,alignItems:"center" }}>
+      {/* ── Legend ── */}
+      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "8px 14px",
+        borderTop: `1px solid ${T.border}`, flexShrink: 0, flexWrap: "wrap" }}>
         {[
-          ["VERSION_OF", T.blue,  false],
-          ["CO_LOCATED", T.teal,  false],
-          ["RELATED_TO", T.amber, true ],
-          ["FOLDERS",    T.faint, false],
-        ].map(([label,color,dashed])=>(
-          <div key={label} style={{ display:"flex",alignItems:"center",gap:5 }}>
-            <div style={{ width:16, height:2, borderRadius:1,
-              background:dashed?"transparent":color,
-              ...(dashed?{borderTop:`2px dashed ${color}`}:{}) }}/>
-            <span style={{ fontSize:10,color:T.faint }}>{label.replace(/_/g," ")}</span>
+          ["Version of",     T.blue,   false],
+          ["Co-located",     T.teal,   false],
+          ["Related to",     T.amber,  true ],
+          ["Shares entity",  T.coral,  false],
+          ["Same topic",     T.violet, true ],
+          ["Folder similar", T.green,  true ],
+        ].map(([label, color, dashed]) => (
+          <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+            <div style={{ width: 16, height: 2, borderRadius: 1,
+              background: dashed ? "transparent" : color,
+              ...(dashed ? { borderTop: `2px dashed ${color}` } : {}) }} />
+            <span style={{ fontSize: 10, color: T.faint }}>{label}</span>
           </div>
         ))}
-        <div style={{ display:"flex",alignItems:"center",gap:5,marginLeft:4 }}>
-          <div style={{ width:10,height:10,background:`${T.violet}33`,border:`1px solid ${T.violet}cc`,borderRadius:2 }}/>
-          <span style={{ fontSize:10,color:T.faint }}>folder node</span>
+        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <div style={{ width: 10, height: 10, background: T.faint, opacity: 0.45, borderRadius: 2 }} />
+          <span style={{ fontSize: 10, color: T.faint }}>folder node</span>
         </div>
       </div>
     </div>
@@ -959,9 +1510,7 @@ export default function App() {
   // FAB toggle
   const toggleChat = () => setChatOpen(o=>!o);
 
-  const highlightId = selected&&graphData
-    ? graphData.nodes.find(n=>n.label.toLowerCase().includes(selected.file.split(".")[0].toLowerCase().slice(0,12)))?.id
-    : null;
+  const highlightId = selected?.id || null;
   const connColor={connecting:T.amber,ok:T.green,error:T.coral}[conn];
   const connLabel={connecting:"Connecting…",ok:stats?.model??"Connected",error:"Backend offline"}[conn];
 
@@ -989,7 +1538,6 @@ export default function App() {
             </div>
             <div>
               <div style={{ fontSize:14,fontWeight:700,letterSpacing:"-0.02em",lineHeight:1.1 }}>MemoryGraph</div>
-              <div style={{ fontSize:9,color:T.faint,letterSpacing:"0.05em" }}>LOCAL · PRIVATE</div>
             </div>
           </div>
           <div style={{ flex:1,maxWidth:780 }}>

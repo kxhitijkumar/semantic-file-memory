@@ -94,6 +94,8 @@ class SemanticMemory:
         self.bm25_chunk_ids = []
         self.faiss_index = None
         self.intent_cache = self._load_intent_cache()
+        self._folder_profiles: dict = {}
+        self._topic_clusters:  dict = {}
 
         self.index_files()
 
@@ -357,10 +359,231 @@ class SemanticMemory:
             self.vectors[doc_id] = np.mean(doc_matrix, axis=0)
 
         print(f">>> Indexed {len(self.documents)} documents and {len(self.chunks)} chunks.")
+
+        # ── Semantic enrichment (runs after all vectors are ready) ──────────
+        # 1. Extract entities from each document's text and store on the doc
+        print(">>> Extracting entities from documents...")
+        for filepath, text in zip(files, texts):
+            file_id = FileProcessor.get_file_hash(filepath)
+            if file_id in self.documents:
+                entities = self._extract_entities(text, os.path.basename(filepath))
+                self.documents[file_id]["entities"] = entities
+
+        # 2. Build folder semantic profiles from raw doc vectors
+        print(">>> Building folder semantic profiles...")
+        folder_profiles = self._build_folder_profiles()
+        self._folder_profiles = folder_profiles  # cache on self for build_graph
+
+        # 3. Context-enrich doc vectors with folder profiles
+        print(">>> Context-enriching document vectors...")
+        self._context_enrich_vectors(folder_profiles)
+
+        # 4. Topic clustering on enriched vectors
+        print(">>> Running topic cluster detection...")
+        self._topic_clusters = self._build_topic_clusters()
+
         self.build_graph()
         self._save_cached_artifacts(signature)
 
-    # ── Graph helpers ──────────────────────────────────────────────────────
+    # ── Semantic understanding helpers ────────────────────────────────────
+
+    @staticmethod
+    def _extract_entities(text: str, filename: str) -> dict[str, list[str]]:
+        """
+        Extract named entities from text using regex patterns.
+        Returns a dict of entity_type → [entity_string, ...].
+        No NLP library required — pure regex on common patterns.
+        """
+        entities: dict[str, list[str]] = {
+            "emails":     [],
+            "dates":      [],
+            "amounts":    [],
+            "project_codes": [],
+            "names":      [],
+            "orgs":       [],
+            "keywords":   [],
+        }
+
+        # Emails
+        entities["emails"] = list(set(re.findall(
+            r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", text
+        )))
+
+        # Dates (various formats)
+        entities["dates"] = list(set(re.findall(
+            r"\b(?:\d{4}-\d{2}-\d{2}|\d{2}/\d{2}/\d{4}|"
+            r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4})\b",
+            text
+        )))[:10]
+
+        # Monetary amounts
+        entities["amounts"] = list(set(re.findall(
+            r"(?:USD|EUR|GBP|INR|₹|\$|€|£)\s*[\d,]+(?:\.\d{2})?|"
+            r"[\d,]+(?:\.\d{2})?\s*(?:USD|EUR|GBP|INR)",
+            text
+        )))[:10]
+
+        # Project / ticket codes  (e.g. PROJ-123, TKT_456, v2.1.3)
+        entities["project_codes"] = list(set(re.findall(
+            r"\b[A-Z]{2,8}[-_]\d+\b|v\d+\.\d+(?:\.\d+)?",
+            text
+        )))[:10]
+
+        # Capitalised multi-word phrases (likely proper nouns / org names)
+        # E.g. "TechCorp", "Project Alpha", "Semantic OS"
+        cap_phrases = re.findall(r"\b(?:[A-Z][a-zA-Z0-9]+(?:\s+[A-Z][a-zA-Z0-9]+){0,3})\b", text)
+        # Filter out common English title-case words
+        stop_caps = {"The","A","An","In","On","At","To","For","Of","And","Or","But","Is","Are","Was"}
+        cap_phrases = [p for p in cap_phrases if p not in stop_caps and len(p) > 3]
+        # Take the most frequent ones
+        from collections import Counter
+        top = [w for w, _ in Counter(cap_phrases).most_common(15)]
+        entities["names"] = top
+
+        # High-frequency non-stopword content words (TF proxy for topic keywords)
+        stop = {
+            "the","a","an","in","on","at","to","for","of","and","or","but","is","are",
+            "was","were","be","been","being","have","has","had","do","does","did","will",
+            "would","could","should","may","might","shall","with","from","by","as","it",
+            "its","this","that","these","those","we","our","i","my","you","your","they",
+            "their","he","she","his","her","not","all","more","can","also","if","then",
+            "so","up","out","no","other","new","just","into","about","than","over",
+        }
+        words = re.findall(r"\b[a-z]{4,}\b", text.lower())
+        word_freq = Counter(words)
+        entities["keywords"] = [w for w, c in word_freq.most_common(20) if w not in stop]
+
+        return entities
+
+    def _build_folder_profiles(self) -> dict[str, np.ndarray]:
+        """
+        Compute a mean embedding vector for each folder by averaging the
+        document vectors of all files it directly contains.
+        Returns folder_canon_path → mean_vector.
+        """
+        from collections import defaultdict
+        folder_vecs: dict[str, list[np.ndarray]] = defaultdict(list)
+        root_canon = self._canon(self.root_directory)
+
+        for fid, doc in self.documents.items():
+            vec = self.vectors.get(fid)
+            if vec is None:
+                continue
+            cf = self._canon(doc["folder"])
+            folder_vecs[cf].append(vec)
+
+            # Also contribute to all ancestor folders up to root
+            cur = cf
+            while cur != root_canon:
+                parent = self._canon(os.path.dirname(cur))
+                if parent == cur or not parent.startswith(root_canon):
+                    break
+                folder_vecs[parent].append(vec)
+                cur = parent
+
+        profiles: dict[str, np.ndarray] = {}
+        for cf, vecs in folder_vecs.items():
+            mat = np.array(vecs, dtype=np.float32)
+            mean = mat.mean(axis=0)
+            norm = np.linalg.norm(mean)
+            profiles[cf] = mean / norm if norm > 0 else mean
+
+        return profiles
+
+    def _build_topic_clusters(self, n_clusters: int | None = None) -> dict[str, int]:
+        """
+        Assign each document to a topic cluster using simple k-means on
+        doc vectors.  Returns doc_id → cluster_id mapping.
+        Automatically picks k = max(2, sqrt(n_docs / 2)).
+        """
+        doc_ids = [d for d in self.doc_ids_in_order if d in self.vectors]
+        n = len(doc_ids)
+        if n < 3:
+            return {d: 0 for d in doc_ids}
+
+        if n_clusters is None:
+            import math
+            n_clusters = max(2, min(int(math.sqrt(n / 2)), n // 2, 12))
+
+        matrix = np.array([self.vectors[d] for d in doc_ids], dtype=np.float32)
+
+        # K-means with random restarts (no sklearn needed)
+        rng = np.random.default_rng(42)
+        best_labels: np.ndarray | None = None
+        best_inertia = float("inf")
+
+        for _ in range(5):  # 5 restarts
+            # Initialise centroids with k-means++ style spread
+            centroids = [matrix[rng.integers(n)]]
+            for _ in range(n_clusters - 1):
+                dists = np.array([
+                    min(np.dot(v, c) for c in centroids)
+                    for v in matrix
+                ])
+                # Lower similarity = further away = better candidate centroid
+                probs = 1 - np.clip(dists, 0, 1)
+                probs /= probs.sum()
+                centroids.append(matrix[rng.choice(n, p=probs)])
+
+            centroids_arr = np.array(centroids, dtype=np.float32)
+
+            for iteration in range(50):
+                # Assign — cosine similarity (vectors already normalised)
+                sims = matrix @ centroids_arr.T  # (n, k)
+                labels = sims.argmax(axis=1)
+
+                # Update centroids
+                new_centroids = np.zeros_like(centroids_arr)
+                for k in range(n_clusters):
+                    mask = labels == k
+                    if mask.sum() > 0:
+                        mean = matrix[mask].mean(axis=0)
+                        norm = np.linalg.norm(mean)
+                        new_centroids[k] = mean / norm if norm > 0 else mean
+                    else:
+                        new_centroids[k] = centroids_arr[k]
+
+                if np.allclose(centroids_arr, new_centroids, atol=1e-4):
+                    break
+                centroids_arr = new_centroids
+
+            # Inertia = sum of (1 - max_similarity) for each point
+            max_sims = (matrix @ centroids_arr.T).max(axis=1)
+            inertia = float((1 - max_sims).sum())
+
+            if inertia < best_inertia:
+                best_inertia = inertia
+                best_labels = labels.copy()
+
+        cluster_map = {doc_ids[i]: int(best_labels[i]) for i in range(n)}
+        n_actual = len(set(cluster_map.values()))
+        print(f">>> Topic clustering: {n} docs → {n_actual} clusters (k={n_clusters})")
+        return cluster_map
+
+    def _context_enrich_vectors(self, folder_profiles: dict[str, np.ndarray]) -> None:
+        """
+        Replace each doc vector with a weighted blend of its own vector and
+        its folder's semantic profile.  This makes cross-folder similarity
+        more meaningful — a finance doc in /work/invoices will be pulled
+        slightly toward other finance docs even if their raw similarity is below
+        the threshold.
+
+        final_vec = 0.85 * doc_vec + 0.15 * folder_profile_vec
+        """
+        alpha = 0.15
+        root_canon = self._canon(self.root_directory)
+
+        for fid, doc in self.documents.items():
+            vec = self.vectors.get(fid)
+            if vec is None:
+                continue
+            cf = self._canon(doc["folder"])
+            fp = folder_profiles.get(cf)
+            if fp is None:
+                continue
+            blended = (1 - alpha) * vec + alpha * fp
+            norm = np.linalg.norm(blended)
+            self.vectors[fid] = blended / norm if norm > 0 else blended
 
     @staticmethod
     def _norm_stem(filename: str) -> str:
@@ -446,87 +669,134 @@ class SemanticMemory:
 
     # ── Main graph builder ─────────────────────────────────────────────────
 
+    @staticmethod
+    def _canon(path: str) -> str:
+        """
+        Canonical path with forward slashes — normalised but NOT made absolute
+        via abspath, because abspath resolves relative to the process cwd which
+        may differ from the project root.  All paths coming from os.walk /
+        os.path.dirname are already absolute, so normpath alone is sufficient.
+        """
+        return os.path.normpath(path).replace("\\", "/")
+
+    @staticmethod
+    def _folder_node_id(canon_folder: str) -> str:
+        return f"folder:{canon_folder}"
+
     def build_graph(self):
         """
-        Build the knowledge graph with three relationship types:
+        Build the knowledge graph with four relationship types:
 
-        VERSION_OF   — same document at different revision stages.
-                       Detected by exact normalised-stem match (after stripping
-                       v2/draft/final suffixes).  Only fires when stems match
-                       exactly, never on substring containment.
-
-        CO_LOCATED   — files that share the exact same folder.
-                       Bidirectional, represents physical co-presence.
-
-        PARENT_FOLDER — file is a direct child of a folder that contains
-                       another file.  Models the folder hierarchy so the graph
-                       reflects the real file system structure.
-
-        RELATED_TO   — semantically similar content, gated by an adaptive
-                       threshold calibrated to the 85th percentile of pairwise
-                       cosine similarities in this corpus.  Prevents the
-                       "everything is related" problem caused by using a fixed
-                       threshold on a dense embedding model.
+        VERSION_OF      — same document stem at different revision stages.
+        CO_LOCATED      — files sharing the exact same folder.
+        PARENT_FOLDER   — folder → file containment edge.
+        CONTAINS_FOLDER — folder → subfolder containment edge.
+        RELATED_TO      — semantic similarity above an adaptive threshold.
         """
         print(">>> Building Relationship Graph...")
         self.graph = nx.DiGraph()
 
-        # ── 1. Add folder nodes for every unique directory ─────────────────
-        all_folders: set[str] = set()
-        for doc in self.documents.values():
-            folder = doc["folder"]
-            all_folders.add(folder)
-            # Add all ancestor folders up to (but not including) root
-            parts = os.path.normpath(os.path.relpath(folder, self.root_directory)).split(os.sep)
-            for depth in range(len(parts)):
-                ancestor = os.path.normpath(
-                    os.path.join(self.root_directory, *parts[:depth + 1])
-                )
-                all_folders.add(ancestor)
+        root_canon = self._canon(self.root_directory)
 
-        for folder in all_folders:
-            rel = os.path.relpath(folder, self.root_directory).replace("\\", "/")
-            label = os.path.basename(folder) or rel
+        # ── Helper: normalise every stored folder path ──────────────────────
+        # doc["folder"] comes from os.path.dirname which may use backslashes.
+        # Canonicalise once and use throughout so all node IDs match.
+        canon_folder: dict[str, str] = {
+            fid: self._canon(doc["folder"])
+            for fid, doc in self.documents.items()
+        }
+
+        # ── 1. Collect every folder that exists between root and any file ───
+        all_canon_folders: set[str] = set()
+
+        # Always include root itself
+        all_canon_folders.add(root_canon)
+
+        for cf in canon_folder.values():
+            # Only track folders that are at or below root
+            if not cf.startswith(root_canon):
+                continue
+            cur = cf
+            while True:
+                all_canon_folders.add(cur)
+                if cur == root_canon:
+                    break
+                parent = self._canon(os.path.dirname(cur))
+                if parent == cur:
+                    # Reached the filesystem root without hitting root_canon — stop
+                    break
+                cur = parent
+
+        # ── 2. Add folder nodes ─────────────────────────────────────────────
+        # Debug: print discovered folders so misconfigured roots are obvious
+        rel_folders = []
+        for cf in sorted(all_canon_folders):
+            try:
+                rel = os.path.relpath(cf, root_canon).replace("\\", "/")
+            except ValueError:
+                continue
+            rel_folders.append(rel)
+        print(f">>> Discovered {len(all_canon_folders)} folder(s): {rel_folders}")
+
+        for cf in all_canon_folders:
+            try:
+                rel = os.path.relpath(cf, root_canon).replace("\\", "/")
+            except ValueError:
+                # On Windows, relpath fails across drives — skip
+                continue
+            label = os.path.basename(cf) if cf != root_canon else os.path.basename(root_canon)
             self.graph.add_node(
-                f"folder:{folder}",
-                label=label,
+                self._folder_node_id(cf),
+                label=label or rel,
                 type="folder",
                 rel_path=rel,
+                abs_path=cf,
             )
 
-        # ── 2. Add file nodes ───────────────────────────────────────────────
+        # ── 3. Add file nodes ───────────────────────────────────────────────
         for file_id, doc in self.documents.items():
-            rel_path = os.path.relpath(doc["path"], self.root_directory).replace("\\", "/")
+            cf  = canon_folder[file_id]
+            try:
+                rel = os.path.relpath(doc["path"], root_canon).replace("\\", "/")
+            except ValueError:
+                rel = doc["filename"]
             self.graph.add_node(
                 file_id,
                 label=doc["filename"],
                 type="file",
-                folder=doc["folder"],
-                rel_path=rel_path,
+                folder=cf,
+                rel_path=rel,
                 doc_type=doc["metadata"].get("type", "general"),
                 extension=doc["metadata"].get("extension", ""),
             )
 
-        # ── 3. File → parent-folder edges (PARENT_FOLDER) ──────────────────
-        for file_id, doc in self.documents.items():
-            folder_node = f"folder:{doc['folder']}"
+        # ── 4. File → parent-folder edges (PARENT_FOLDER) ──────────────────
+        for file_id in self.documents:
+            cf          = canon_folder[file_id]
+            folder_node = self._folder_node_id(cf)
             if self.graph.has_node(folder_node):
                 self.graph.add_edge(folder_node, file_id, relation="PARENT_FOLDER")
+            else:
+                print(f"    [WARN] no folder node for {cf!r} (file {self.documents[file_id]['filename']!r})")
 
-        # ── 4. Folder containment edges ────────────────────────────────────
-        for folder in all_folders:
-            parent = os.path.dirname(folder)
-            parent_node = f"folder:{parent}"
-            folder_node = f"folder:{folder}"
+        # ── 5. Folder → subfolder edges (CONTAINS_FOLDER) ──────────────────
+        for cf in all_canon_folders:
+            if cf == root_canon:
+                continue  # root has no parent inside our watch tree
+            parent_canon = self._canon(os.path.dirname(cf))
+            # Only link if the parent is also within our tracked set
+            if parent_canon not in all_canon_folders:
+                continue
+            parent_node = self._folder_node_id(parent_canon)
+            child_node  = self._folder_node_id(cf)
             if (
-                parent != folder
-                and parent != os.path.dirname(self.root_directory)
-                and self.graph.has_node(parent_node)
-                and self.graph.has_node(folder_node)
+                self.graph.has_node(parent_node)
+                and self.graph.has_node(child_node)
+                and parent_node != child_node
             ):
-                self.graph.add_edge(parent_node, folder_node, relation="CONTAINS_FOLDER")
+                self.graph.add_edge(parent_node, child_node, relation="CONTAINS_FOLDER")
 
-        # ── 5. Pairwise file relationships ─────────────────────────────────
+        # ── 6. Pairwise file relationships ─────────────────────────────────
         # Pre-compute normalised stems for VERSION_OF detection
         stems: dict[str, str] = {
             fid: self._norm_stem(doc["filename"])
@@ -536,65 +806,128 @@ class SemanticMemory:
         # Adaptive threshold so RELATED_TO doesn't fire on everything
         sim_threshold = self._adaptive_similarity_threshold()
 
-        # Group files by folder for fast CO_LOCATED lookup
-        files_by_folder: dict[str, list[str]] = {}
-        for fid, doc in self.documents.items():
-            files_by_folder.setdefault(doc["folder"], []).append(fid)
+        # Topic clusters (may be empty if not yet computed on this run)
+        topic_clusters: dict[str, int] = getattr(self, "_topic_clusters", {})
 
         doc_ids = list(self.documents.keys())
 
         for i, fid_a in enumerate(doc_ids):
-            doc_a   = self.documents[fid_a]
-            stem_a  = stems[fid_a]
-            vec_a   = self.vectors.get(fid_a)
+            stem_a   = stems[fid_a]
+            vec_a    = self.vectors.get(fid_a)
+            folder_a = canon_folder[fid_a]
+            doc_a    = self.documents[fid_a]
+            ents_a   = doc_a.get("entities", {})
 
             for j in range(i + 1, len(doc_ids)):
-                fid_b  = doc_ids[j]
-                doc_b  = self.documents[fid_b]
-                stem_b = stems[fid_b]
-                vec_b  = self.vectors.get(fid_b)
+                fid_b    = doc_ids[j]
+                stem_b   = stems[fid_b]
+                vec_b    = self.vectors.get(fid_b)
+                folder_b = canon_folder[fid_b]
+                doc_b    = self.documents[fid_b]
+                ents_b   = doc_b.get("entities", {})
 
                 # ── VERSION_OF: exact stem match only ──────────────────────
-                # Require stems to be identical AND at least 4 chars to
-                # avoid spurious matches on very short names like "cv" or "db"
-                if stem_a and stem_b and stem_a == stem_b and len(stem_a) >= 4:
-                    # Older file → newer file (directed: "this is a version of")
+                is_version = stem_a and stem_b and stem_a == stem_b and len(stem_a) >= 4
+                if is_version:
                     if doc_a["mod_time"] <= doc_b["mod_time"]:
                         self.graph.add_edge(fid_a, fid_b, relation="VERSION_OF")
                     else:
                         self.graph.add_edge(fid_b, fid_a, relation="VERSION_OF")
 
-                # ── CO_LOCATED: same folder, not a version of each other ───
-                elif doc_a["folder"] == doc_b["folder"]:
+                # ── CO_LOCATED: same canonical folder, not a version pair ──
+                elif folder_a == folder_b:
                     self.graph.add_edge(fid_a, fid_b, relation="CO_LOCATED")
                     self.graph.add_edge(fid_b, fid_a, relation="CO_LOCATED")
+
+                # ── SHARES_ENTITY: meaningful shared named entities ─────────
+                # Check across high-signal entity types only (not keywords,
+                # which are too common and would recreate the "everything
+                # is related" problem)
+                shared_entities: list[str] = []
+                for etype in ("emails", "project_codes", "amounts", "names"):
+                    a_set = set(ents_a.get(etype, []))
+                    b_set = set(ents_b.get(etype, []))
+                    shared = a_set & b_set
+                    if shared:
+                        shared_entities.extend(list(shared)[:3])
+
+                if shared_entities and not is_version:
+                    # Weight = proportion of entities shared vs total unique
+                    total_unique = len(
+                        set(ents_a.get("names", []) + ents_b.get("names", []))
+                        | set(ents_a.get("project_codes", []) + ents_b.get("project_codes", []))
+                    ) or 1
+                    weight = round(min(len(shared_entities) / total_unique, 1.0), 3)
+                    payload = dict(
+                        relation="SHARES_ENTITY",
+                        weight=weight,
+                        shared=shared_entities[:5],
+                    )
+                    self.graph.add_edge(fid_a, fid_b, **payload)
+                    self.graph.add_edge(fid_b, fid_a, **payload)
+
+                # ── SAME_TOPIC: same topic cluster, cross-folder ────────────
+                # Only add when files are in different folders — same-folder
+                # files are already linked by CO_LOCATED.
+                cluster_a = topic_clusters.get(fid_a)
+                cluster_b = topic_clusters.get(fid_b)
+                if (
+                    cluster_a is not None
+                    and cluster_b is not None
+                    and cluster_a == cluster_b
+                    and folder_a != folder_b
+                    and not is_version
+                    and not self.graph.has_edge(fid_a, fid_b)
+                ):
+                    self.graph.add_edge(fid_a, fid_b, relation="SAME_TOPIC",
+                                        cluster=cluster_a, weight=0.5)
+                    self.graph.add_edge(fid_b, fid_a, relation="SAME_TOPIC",
+                                        cluster=cluster_a, weight=0.5)
 
                 # ── RELATED_TO: semantic similarity above adaptive threshold ─
                 if vec_a is not None and vec_b is not None:
                     similarity = float(np.dot(vec_a, vec_b))
-                    if similarity >= sim_threshold:
-                        # Don't add RELATED_TO between files already linked as
-                        # VERSION_OF — they're related by definition
-                        already_versioned = (
-                            self.graph.has_edge(fid_a, fid_b)
-                            and self.graph[fid_a][fid_b].get("relation") == "VERSION_OF"
-                        ) or (
-                            self.graph.has_edge(fid_b, fid_a)
-                            and self.graph[fid_b][fid_a].get("relation") == "VERSION_OF"
+                    if similarity >= sim_threshold and not is_version:
+                        self.graph.add_edge(
+                            fid_a, fid_b,
+                            relation="RELATED_TO",
+                            weight=round(similarity, 4),
                         )
-                        if not already_versioned:
-                            self.graph.add_edge(
-                                fid_a, fid_b,
-                                relation="RELATED_TO",
-                                weight=round(similarity, 4),
-                            )
-                            self.graph.add_edge(
-                                fid_b, fid_a,
-                                relation="RELATED_TO",
-                                weight=round(similarity, 4),
-                            )
+                        self.graph.add_edge(
+                            fid_b, fid_a,
+                            relation="RELATED_TO",
+                            weight=round(similarity, 4),
+                        )
 
-        # ── 6. PageRank (file nodes only) ──────────────────────────────────
+        # ── 7. Folder-level semantic similarity (FOLDER_SIMILAR) ───────────
+        folder_profiles: dict[str, np.ndarray] = getattr(self, "_folder_profiles", {})
+        folder_ids = [
+            self._folder_node_id(cf)
+            for cf in all_canon_folders
+            if self.graph.has_node(self._folder_node_id(cf))
+        ]
+        cf_list = [
+            cf for cf in all_canon_folders
+            if cf in folder_profiles and self.graph.has_node(self._folder_node_id(cf))
+        ]
+
+        FOLDER_SIM_THRESHOLD = 0.80
+        for i, cf_a in enumerate(cf_list):
+            for j in range(i + 1, len(cf_list)):
+                cf_b = cf_list[j]
+                # Don't link parent-child folders (already structurally linked)
+                if cf_a.startswith(cf_b + "/") or cf_b.startswith(cf_a + "/"):
+                    continue
+                sim = float(np.dot(folder_profiles[cf_a], folder_profiles[cf_b]))
+                if sim >= FOLDER_SIM_THRESHOLD:
+                    fn_a = self._folder_node_id(cf_a)
+                    fn_b = self._folder_node_id(cf_b)
+                    self.graph.add_edge(fn_a, fn_b, relation="FOLDER_SIMILAR",
+                                        weight=round(sim, 4))
+                    self.graph.add_edge(fn_b, fn_a, relation="FOLDER_SIMILAR",
+                                        weight=round(sim, 4))
+
+        # ── 7. PageRank (file nodes only) ──────────────────────────────────
         file_subgraph = self.graph.subgraph(
             [n for n, d in self.graph.nodes(data=True) if d.get("type") == "file"]
         )

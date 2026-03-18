@@ -255,6 +255,9 @@ def graph():
         "VERSION_OF":      "#4f80ff",
         "CO_LOCATED":      "#2ee8c8",
         "RELATED_TO":      "#ffb340",
+        "SHARES_ENTITY":   "#f87171",   # coral — concrete named-entity link
+        "SAME_TOPIC":      "#b57bff",   # violet — cluster-based cross-folder link
+        "FOLDER_SIMILAR":  "#3ddc84",   # green — folder-level semantic link
         "PARENT_FOLDER":   "#343a4a",
         "CONTAINS_FOLDER": "#272b36",
     }
@@ -282,14 +285,17 @@ def graph():
             pr_norm  = pr.get(node_id, 0.0) / pr_max
             size     = round(NODE_SIZE_BASE + pr_norm * NODE_SIZE_SCALE)
 
-            # Colour priority: doc_type > extension > default
             colour = (
                 DOC_TYPE_COLOUR_MAP.get(doc_type)
                 or FILE_COLOUR_MAP.get(ext)
                 or "#9aa0b4"
             )
 
-            nodes.append({
+            doc      = memory.documents.get(node_id, {})
+            entities = doc.get("entities", {})
+            cluster  = getattr(memory, "_topic_clusters", {}).get(node_id)
+
+            node_entry = {
                 "id":       node_id,
                 "label":    label,
                 "color":    colour,
@@ -299,7 +305,15 @@ def graph():
                 "ext":      ext,
                 "docType":  doc_type,
                 "relPath":  attrs.get("rel_path", ""),
-            })
+            }
+            if entities.get("keywords"):
+                node_entry["keywords"] = entities["keywords"][:8]
+            if entities.get("names"):
+                node_entry["topNames"] = entities["names"][:5]
+            if cluster is not None:
+                node_entry["cluster"] = cluster
+
+            nodes.append(node_entry)
 
     # ── Hierarchical layout ──────────────────────────────────────────────
     # Folder nodes get positions based on tree depth; file nodes orbit
@@ -349,28 +363,33 @@ def graph():
 
     # Place file nodes orbiting their parent folder
     # Group files by their parent folder
+    # Use string comparison so we're safe after json roundtrip
+    folder_pos_str: dict[str, tuple[int, int]] = {
+        str(k): v for k, v in folder_pos.items()
+    }
+
     files_per_folder: dict[str, list] = {}
     for fn in file_nodes:
-        # Find parent folder from graph edges
         parent_folder_id = None
         nid = fn["id"]
         for pred in memory.graph.predecessors(nid):
-            if str(pred).startswith("folder:"):
+            pred_str = str(pred)
+            if pred_str.startswith("folder:"):
                 edge_data = memory.graph.get_edge_data(pred, nid, {})
                 if edge_data.get("relation") == "PARENT_FOLDER":
-                    parent_folder_id = pred
+                    parent_folder_id = pred_str
                     break
         key = parent_folder_id or "__no_parent__"
         files_per_folder.setdefault(key, []).append(fn)
 
-    for parent_id, flist in files_per_folder.items():
-        if parent_id in folder_pos:
-            px, py = folder_pos[parent_id]
+    for parent_id_str, flist in files_per_folder.items():
+        if parent_id_str in folder_pos_str:
+            px, py = folder_pos_str[parent_id_str]
         else:
             px, py = cx, cy
 
-        n       = len(flist)
-        radius  = max(45, 20 * n)
+        n      = len(flist)
+        radius = max(50, 22 * n)
         for k, fn in enumerate(flist):
             angle  = (2 * math.pi * k / n) - math.pi / 2
             fn["x"] = round(min(W - 20, max(20, px + radius * math.cos(angle))))
@@ -390,20 +409,86 @@ def graph():
             w = 0.3
         elif relation == "VERSION_OF":
             w = 1.0
+        elif relation in ("SHARES_ENTITY", "SAME_TOPIC"):
+            w = 0.8
+        elif relation == "FOLDER_SIMILAR":
+            w = 0.6
         elif relation == "CO_LOCATED":
             w = 0.7
         else:
             w = round(float(weight), 3)
 
-        edges.append({
+        edge_payload = {
             "from":   source,
             "to":     target,
             "type":   relation,
             "weight": w,
             "color":  EDGE_COLOUR_MAP.get(relation, "#5c6278"),
-        })
+        }
+
+        # Attach semantic metadata for richer frontend tooltip
+        if relation == "SHARES_ENTITY" and attrs.get("shared"):
+            edge_payload["shared"] = attrs["shared"]
+        if relation == "SAME_TOPIC" and attrs.get("cluster") is not None:
+            edge_payload["cluster"] = attrs["cluster"]
+        if relation == "FOLDER_SIMILAR":
+            edge_payload["similarity"] = round(float(weight), 3)
+
+        edges.append(edge_payload)
 
     return {"nodes": node_list, "edges": edges}
+
+
+@app.get("/debug/graph")
+def debug_graph():
+    """
+    Returns a plain-text tree of how the graph sees your folder structure.
+    Hit http://localhost:8000/debug/graph in a browser to verify subfolders
+    are being detected correctly before checking the frontend visualisation.
+    """
+    if not memory.graph or memory.graph.number_of_nodes() == 0:
+        return {"error": "Graph not built yet."}
+
+    folder_nodes = [
+        (nid, d) for nid, d in memory.graph.nodes(data=True)
+        if d.get("type") == "folder"
+    ]
+    file_nodes = [
+        (nid, d) for nid, d in memory.graph.nodes(data=True)
+        if d.get("type") == "file"
+    ]
+
+    tree: dict[str, list[str]] = {}
+    for nid, d in folder_nodes:
+        rel = d.get("rel_path", str(nid))
+        files_here = []
+        for fid, fd in file_nodes:
+            if fd.get("folder") == d.get("abs_path"):
+                files_here.append(fd.get("label", fid))
+        tree[rel] = sorted(files_here)
+
+    return {
+        "root": memory.root_directory,
+        "folder_count": len(folder_nodes),
+        "file_count": len(file_nodes),
+        "edge_count": memory.graph.number_of_edges(),
+        "edge_types": dict(
+            sorted(
+                {
+                    attrs.get("relation", "?"): 0
+                    for _, __, attrs in memory.graph.edges(data=True)
+                }.items()
+            )
+        ),
+        "edges_by_type": {
+            rel: sum(
+                1 for _, __, a in memory.graph.edges(data=True)
+                if a.get("relation") == rel
+            )
+            for rel in ["VERSION_OF", "CO_LOCATED", "RELATED_TO", "PARENT_FOLDER", "CONTAINS_FOLDER"]
+        },
+        "folder_tree": tree,
+    }
 
 
 
