@@ -360,44 +360,254 @@ class SemanticMemory:
         self.build_graph()
         self._save_cached_artifacts(signature)
 
+    # ── Graph helpers ──────────────────────────────────────────────────────
+
+    @staticmethod
+    def _norm_stem(filename: str) -> str:
+        """
+        Strip extension and version/draft/final suffixes, return lowercase.
+        Used for VERSION_OF matching — must be an exact stem match, not a
+        substring match, to avoid false positives.
+        e.g.  "Report_v2_FINAL.pdf"  →  "report"
+              "report_draft.docx"    →  "report"
+              "annual_report.md"     →  "annual_report"   (no suffix stripped)
+        """
+        stem = os.path.splitext(filename)[0].lower()
+        # Strip common version/status suffixes iteratively until stable
+        pattern = re.compile(
+            r"[_\-]?(v\d+(\.\d+)*|draft|final|copy|revised|review|old|new|latest|backup)$",
+            re.IGNORECASE,
+        )
+        prev = None
+        while prev != stem:
+            prev = stem
+            stem = pattern.sub("", stem).strip("_- ")
+        return stem
+
+    @staticmethod
+    def _folder_depth(folder: str, root: str) -> int:
+        """Number of path components between root and folder (0 = root itself)."""
+        rel = os.path.relpath(folder, root)
+        if rel == ".":
+            return 0
+        return len(rel.replace("\\", "/").split("/"))
+
+    @staticmethod
+    def _common_ancestor(folder_a: str, folder_b: str) -> str:
+        """Return the deepest common directory of two absolute folder paths."""
+        parts_a = os.path.normpath(folder_a).split(os.sep)
+        parts_b = os.path.normpath(folder_b).split(os.sep)
+        common = []
+        for pa, pb in zip(parts_a, parts_b):
+            if pa == pb:
+                common.append(pa)
+            else:
+                break
+        return os.sep.join(common) if common else os.sep
+
+    def _adaptive_similarity_threshold(self) -> float:
+        """
+        Compute a per-corpus similarity threshold for RELATED_TO edges.
+
+        Strategy: take the 85th-percentile pairwise similarity across a
+        random sample of document pairs.  This ensures the threshold scales
+        with the actual embedding distribution of *this* corpus rather than
+        using a hardcoded value that fires on everything for bge-small-en.
+
+        Falls back to 0.92 when there are fewer than 4 documents.
+        """
+        doc_ids = [d for d in self.doc_ids_in_order if d in self.vectors]
+        n = len(doc_ids)
+        if n < 4:
+            return 0.92
+
+        import random
+        rng = random.Random(42)
+        # Sample at most 300 pairs to keep startup fast
+        max_pairs = 300
+        pairs_needed = min(max_pairs, n * (n - 1) // 2)
+        all_pairs = [(i, j) for i in range(n) for j in range(i + 1, n)]
+        sampled = rng.sample(all_pairs, pairs_needed)
+
+        sims = []
+        for i, j in sampled:
+            va = self.vectors[doc_ids[i]]
+            vb = self.vectors[doc_ids[j]]
+            sims.append(float(np.dot(va, vb)))
+
+        sims.sort()
+        # 85th percentile — only the top 15% of pairs get a RELATED_TO edge
+        idx = int(len(sims) * 0.85)
+        threshold = sims[min(idx, len(sims) - 1)]
+        # Hard floor and ceiling to stay sane
+        threshold = max(0.88, min(threshold, 0.97))
+        print(f">>> RELATED_TO threshold: {threshold:.4f}  (85th-pct of {len(sims)} sampled pairs)")
+        return threshold
+
+    # ── Main graph builder ─────────────────────────────────────────────────
+
     def build_graph(self):
+        """
+        Build the knowledge graph with three relationship types:
+
+        VERSION_OF   — same document at different revision stages.
+                       Detected by exact normalised-stem match (after stripping
+                       v2/draft/final suffixes).  Only fires when stems match
+                       exactly, never on substring containment.
+
+        CO_LOCATED   — files that share the exact same folder.
+                       Bidirectional, represents physical co-presence.
+
+        PARENT_FOLDER — file is a direct child of a folder that contains
+                       another file.  Models the folder hierarchy so the graph
+                       reflects the real file system structure.
+
+        RELATED_TO   — semantically similar content, gated by an adaptive
+                       threshold calibrated to the 85th percentile of pairwise
+                       cosine similarities in this corpus.  Prevents the
+                       "everything is related" problem caused by using a fixed
+                       threshold on a dense embedding model.
+        """
         print(">>> Building Relationship Graph...")
         self.graph = nx.DiGraph()
+
+        # ── 1. Add folder nodes for every unique directory ─────────────────
+        all_folders: set[str] = set()
+        for doc in self.documents.values():
+            folder = doc["folder"]
+            all_folders.add(folder)
+            # Add all ancestor folders up to (but not including) root
+            parts = os.path.normpath(os.path.relpath(folder, self.root_directory)).split(os.sep)
+            for depth in range(len(parts)):
+                ancestor = os.path.normpath(
+                    os.path.join(self.root_directory, *parts[:depth + 1])
+                )
+                all_folders.add(ancestor)
+
+        for folder in all_folders:
+            rel = os.path.relpath(folder, self.root_directory).replace("\\", "/")
+            label = os.path.basename(folder) or rel
+            self.graph.add_node(
+                f"folder:{folder}",
+                label=label,
+                type="folder",
+                rel_path=rel,
+            )
+
+        # ── 2. Add file nodes ───────────────────────────────────────────────
         for file_id, doc in self.documents.items():
-            self.graph.add_node(file_id, label=doc["filename"], type="file")
+            rel_path = os.path.relpath(doc["path"], self.root_directory).replace("\\", "/")
+            self.graph.add_node(
+                file_id,
+                label=doc["filename"],
+                type="file",
+                folder=doc["folder"],
+                rel_path=rel_path,
+                doc_type=doc["metadata"].get("type", "general"),
+                extension=doc["metadata"].get("extension", ""),
+            )
+
+        # ── 3. File → parent-folder edges (PARENT_FOLDER) ──────────────────
+        for file_id, doc in self.documents.items():
+            folder_node = f"folder:{doc['folder']}"
+            if self.graph.has_node(folder_node):
+                self.graph.add_edge(folder_node, file_id, relation="PARENT_FOLDER")
+
+        # ── 4. Folder containment edges ────────────────────────────────────
+        for folder in all_folders:
+            parent = os.path.dirname(folder)
+            parent_node = f"folder:{parent}"
+            folder_node = f"folder:{folder}"
+            if (
+                parent != folder
+                and parent != os.path.dirname(self.root_directory)
+                and self.graph.has_node(parent_node)
+                and self.graph.has_node(folder_node)
+            ):
+                self.graph.add_edge(parent_node, folder_node, relation="CONTAINS_FOLDER")
+
+        # ── 5. Pairwise file relationships ─────────────────────────────────
+        # Pre-compute normalised stems for VERSION_OF detection
+        stems: dict[str, str] = {
+            fid: self._norm_stem(doc["filename"])
+            for fid, doc in self.documents.items()
+        }
+
+        # Adaptive threshold so RELATED_TO doesn't fire on everything
+        sim_threshold = self._adaptive_similarity_threshold()
+
+        # Group files by folder for fast CO_LOCATED lookup
+        files_by_folder: dict[str, list[str]] = {}
+        for fid, doc in self.documents.items():
+            files_by_folder.setdefault(doc["folder"], []).append(fid)
 
         doc_ids = list(self.documents.keys())
-        for i, file_id in enumerate(doc_ids):
-            doc = self.documents[file_id]
+
+        for i, fid_a in enumerate(doc_ids):
+            doc_a   = self.documents[fid_a]
+            stem_a  = stems[fid_a]
+            vec_a   = self.vectors.get(fid_a)
+
             for j in range(i + 1, len(doc_ids)):
-                other_id = doc_ids[j]
-                other_doc = self.documents[other_id]
+                fid_b  = doc_ids[j]
+                doc_b  = self.documents[fid_b]
+                stem_b = stems[fid_b]
+                vec_b  = self.vectors.get(fid_b)
 
-                if doc["folder"] == other_doc["folder"]:
-                    self.graph.add_edge(file_id, other_id, relation="CO_LOCATED")
-                    self.graph.add_edge(other_id, file_id, relation="CO_LOCATED")
-
-                name_a = os.path.splitext(doc["filename"])[0].lower()
-                name_b = os.path.splitext(other_doc["filename"])[0].lower()
-                clean_a = re.sub(r"(_v\d+|_draft|_final)", "", name_a)
-                clean_b = re.sub(r"(_v\d+|_draft|_final)", "", name_b)
-                if clean_a == clean_b or clean_a in clean_b or clean_b in clean_a:
-                    if doc["mod_time"] < other_doc["mod_time"]:
-                        self.graph.add_edge(file_id, other_id, relation="VERSION_OF")
+                # ── VERSION_OF: exact stem match only ──────────────────────
+                # Require stems to be identical AND at least 4 chars to
+                # avoid spurious matches on very short names like "cv" or "db"
+                if stem_a and stem_b and stem_a == stem_b and len(stem_a) >= 4:
+                    # Older file → newer file (directed: "this is a version of")
+                    if doc_a["mod_time"] <= doc_b["mod_time"]:
+                        self.graph.add_edge(fid_a, fid_b, relation="VERSION_OF")
                     else:
-                        self.graph.add_edge(other_id, file_id, relation="VERSION_OF")
+                        self.graph.add_edge(fid_b, fid_a, relation="VERSION_OF")
 
-                vec_a = self.vectors.get(file_id)
-                vec_b = self.vectors.get(other_id)
-                if vec_a is None or vec_b is None:
-                    continue
-                similarity = float(np.dot(vec_a, vec_b))
-                if similarity > 0.75:
-                    self.graph.add_edge(file_id, other_id, relation="RELATED_TO", weight=similarity)
-                    self.graph.add_edge(other_id, file_id, relation="RELATED_TO", weight=similarity)
+                # ── CO_LOCATED: same folder, not a version of each other ───
+                elif doc_a["folder"] == doc_b["folder"]:
+                    self.graph.add_edge(fid_a, fid_b, relation="CO_LOCATED")
+                    self.graph.add_edge(fid_b, fid_a, relation="CO_LOCATED")
 
-        self.pagerank_scores = nx.pagerank(self.graph) if self.graph.number_of_nodes() else {}
-        print(f">>> Graph built: {self.graph.number_of_nodes()} nodes, {self.graph.number_of_edges()} edges.")
+                # ── RELATED_TO: semantic similarity above adaptive threshold ─
+                if vec_a is not None and vec_b is not None:
+                    similarity = float(np.dot(vec_a, vec_b))
+                    if similarity >= sim_threshold:
+                        # Don't add RELATED_TO between files already linked as
+                        # VERSION_OF — they're related by definition
+                        already_versioned = (
+                            self.graph.has_edge(fid_a, fid_b)
+                            and self.graph[fid_a][fid_b].get("relation") == "VERSION_OF"
+                        ) or (
+                            self.graph.has_edge(fid_b, fid_a)
+                            and self.graph[fid_b][fid_a].get("relation") == "VERSION_OF"
+                        )
+                        if not already_versioned:
+                            self.graph.add_edge(
+                                fid_a, fid_b,
+                                relation="RELATED_TO",
+                                weight=round(similarity, 4),
+                            )
+                            self.graph.add_edge(
+                                fid_b, fid_a,
+                                relation="RELATED_TO",
+                                weight=round(similarity, 4),
+                            )
+
+        # ── 6. PageRank (file nodes only) ──────────────────────────────────
+        file_subgraph = self.graph.subgraph(
+            [n for n, d in self.graph.nodes(data=True) if d.get("type") == "file"]
+        )
+        self.pagerank_scores = (
+            nx.pagerank(file_subgraph) if file_subgraph.number_of_nodes() else {}
+        )
+
+        n_files   = sum(1 for _, d in self.graph.nodes(data=True) if d.get("type") == "file")
+        n_folders = sum(1 for _, d in self.graph.nodes(data=True) if d.get("type") == "folder")
+        print(
+            f">>> Graph built: {n_files} file nodes, {n_folders} folder nodes, "
+            f"{self.graph.number_of_edges()} edges."
+        )
 
     def _should_use_llm_intent(self, query):
         triggers = ["latest", "version", "recent", "pdf", "docx", "invoice", "resume", "meeting"]
@@ -686,23 +896,67 @@ Return ONLY JSON with keys:
     def get_graph_html(self, query=None):
         from pyvis.network import Network
 
-        net = Network(height="600px", width="100%", bgcolor="#222222", font_color="white")
+        net = Network(height="600px", width="100%", bgcolor="#0e1017", font_color="#f0f2f8")
         net.force_atlas_2based()
 
-        for node in self.graph.nodes(data=True):
-            net.add_node(node[0], label=node[1].get("label", "File"), title=node[1].get("label"), color="#ffc107")
+        NODE_COLORS = {
+            "folder":       "#343a4a",   # dark grey — structural
+            "file_default": "#4f80ff",   # blue
+            "resume":       "#ff6b6b",   # coral
+            "invoice":      "#ffb340",   # amber
+            "meeting_notes":"#2ee8c8",   # teal
+            "specification":"#b57bff",   # violet
+            "general":      "#4f80ff",   # blue
+        }
+        EDGE_COLORS = {
+            "VERSION_OF":     "#4f80ff",
+            "CO_LOCATED":     "#2ee8c8",
+            "RELATED_TO":     "#ffb340",
+            "PARENT_FOLDER":  "#343a4a",
+            "CONTAINS_FOLDER":"#343a4a",
+        }
 
-        for edge in self.graph.edges(data=True):
-            color = "gray"
-            width = 1
-            relation = edge[2].get("relation")
+        for node_id, attrs in self.graph.nodes(data=True):
+            node_type = attrs.get("type", "file")
+            if node_type == "folder":
+                net.add_node(
+                    node_id,
+                    label=attrs.get("label", "folder"),
+                    title=f"📁 {attrs.get('rel_path', '')}",
+                    color=NODE_COLORS["folder"],
+                    shape="box",
+                    size=18,
+                    font={"size": 11, "color": "#9aa0b4"},
+                )
+            else:
+                doc_type  = attrs.get("doc_type", "general")
+                extension = attrs.get("extension", "")
+                color     = NODE_COLORS.get(doc_type, NODE_COLORS["file_default"])
+                net.add_node(
+                    node_id,
+                    label=attrs.get("label", "file"),
+                    title=f"{attrs.get('label','')} [{extension}]",
+                    color=color,
+                    shape="dot",
+                    size=14,
+                )
+
+        for src, tgt, attrs in self.graph.edges(data=True):
+            relation = attrs.get("relation", "")
+            color    = EDGE_COLORS.get(relation, "#5c6278")
+            width    = 1
+            dashes   = False
             if relation == "VERSION_OF":
-                color = "#28a745"
                 width = 3
-            elif relation == "RELATED_TO":
-                color = "#17a2b8"
+            elif relation == "CO_LOCATED":
                 width = 2
+            elif relation == "RELATED_TO":
+                width  = 2
+                dashes = True
+            elif relation in ("PARENT_FOLDER", "CONTAINS_FOLDER"):
+                width = 1
+                color = "#272b36"
 
-            net.add_edge(edge[0], edge[1], title=relation, color=color, width=width)
+            net.add_edge(src, tgt, title=relation, color=color, width=width, dashes=dashes)
 
         return net.generate_html("graph.html")

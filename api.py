@@ -18,7 +18,7 @@ import shutil
 import tempfile
 from datetime import datetime
 from typing import Optional
-
+import ollama
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -219,56 +219,192 @@ def search(q: str = Query(..., min_length=1, description="Natural-language searc
 def graph():
     """
     Return the knowledge graph as nodes + edges for the React graph visualiser.
-    Derives positions from a circular layout if not already stored.
+
+    Node types:
+      file   — a document, sized by PageRank, coloured by file extension
+      folder — a directory, rendered as a small square, grey
+
+    Edge types returned (all four now supported):
+      VERSION_OF, CO_LOCATED, RELATED_TO, PARENT_FOLDER, CONTAINS_FOLDER
     """
     if not memory.graph or memory.graph.number_of_nodes() == 0:
         return {"nodes": [], "edges": []}
 
-    # Normalise pagerank for node sizing
-    pr = memory.pagerank_scores or {}
+    pr     = memory.pagerank_scores or {}
     pr_max = max(pr.values()) if pr else 1.0
     pr_max = pr_max if pr_max > 0 else 1.0
 
+    FILE_COLOUR_MAP = {
+        "pdf":  "#f87171",
+        "md":   "#2ee8c8",
+        "docx": "#4f80ff",
+        "py":   "#3ddc84",
+        "txt":  "#b57bff",
+        "json": "#ffb340",
+    }
+    DOC_TYPE_COLOUR_MAP = {
+        "resume":       "#f87171",
+        "invoice":      "#ffb340",
+        "meeting_notes":"#2ee8c8",
+        "specification":"#b57bff",
+        "general":      "#4f80ff",
+    }
+    FOLDER_COLOUR = "#272b36"
+
+    EDGE_COLOUR_MAP = {
+        "VERSION_OF":      "#4f80ff",
+        "CO_LOCATED":      "#2ee8c8",
+        "RELATED_TO":      "#ffb340",
+        "PARENT_FOLDER":   "#343a4a",
+        "CONTAINS_FOLDER": "#272b36",
+    }
+
+    # ── Build node list ──────────────────────────────────────────────────
     nodes = []
     for node_id, attrs in memory.graph.nodes(data=True):
-        label = attrs.get("label", node_id)
-        ext = _ext(label)
-        pr_norm = pr.get(node_id, 0.0) / pr_max
+        node_type = attrs.get("type", "file")
 
-        # Colour nodes by file type (matches EXT_COLOURS in App.jsx)
-        colour_map = {
-            "pdf": "#f87171",
-            "md": "#2dd4bf",
-            "docx": "#5b7fff",
-            "py": "#4ade80",
-            "txt": "#a78bfa",
-            "json": "#f59e0b",
-        }
-        colour = colour_map.get(ext, "#9aa0b4")
-        size = round(NODE_SIZE_BASE + pr_norm * NODE_SIZE_SCALE)
+        if node_type == "folder":
+            rel_path = attrs.get("rel_path", os.path.basename(str(node_id)))
+            nodes.append({
+                "id":       node_id,
+                "label":    attrs.get("label", os.path.basename(str(node_id))),
+                "color":    FOLDER_COLOUR,
+                "size":     7,
+                "shape":    "square",
+                "nodeType": "folder",
+                "relPath":  rel_path,
+            })
+        else:
+            label    = attrs.get("label", str(node_id))
+            ext      = _ext(label)
+            doc_type = attrs.get("doc_type", "general")
+            pr_norm  = pr.get(node_id, 0.0) / pr_max
+            size     = round(NODE_SIZE_BASE + pr_norm * NODE_SIZE_SCALE)
 
-        nodes.append({
-            "id": node_id,
-            "label": label,
-            "color": colour,
-            "size": size,
-        })
+            # Colour priority: doc_type > extension > default
+            colour = (
+                DOC_TYPE_COLOUR_MAP.get(doc_type)
+                or FILE_COLOUR_MAP.get(ext)
+                or "#9aa0b4"
+            )
 
-    nodes = _infer_graph_positions(nodes)
+            nodes.append({
+                "id":       node_id,
+                "label":    label,
+                "color":    colour,
+                "size":     size,
+                "shape":    "circle",
+                "nodeType": "file",
+                "ext":      ext,
+                "docType":  doc_type,
+                "relPath":  attrs.get("rel_path", ""),
+            })
 
+    # ── Hierarchical layout ──────────────────────────────────────────────
+    # Folder nodes get positions based on tree depth; file nodes orbit
+    # their parent folder.
+    import math
+
+    folder_nodes = [n for n in nodes if n["nodeType"] == "folder"]
+    file_nodes   = [n for n in nodes if n["nodeType"] == "file"]
+
+    # Sort folders by depth (shallow first)
+    def _depth(n):
+        return len(n["relPath"].split("/")) if n["relPath"] != "." else 0
+
+    folder_nodes.sort(key=_depth)
+
+    W, H = 560, 420
+    cx, cy = W // 2, H // 2
+
+    # Place folders in a vertical tree layout
+    folder_pos: dict[str, tuple[int, int]] = {}
+    depth_counts: dict[int, int] = {}
+    depth_idx:    dict[int, int] = {}
+
+    for fn in folder_nodes:
+        d = _depth(fn)
+        depth_counts[d] = depth_counts.get(d, 0) + 1
+    for d in depth_counts:
+        depth_idx[d] = 0
+
+    for fn in folder_nodes:
+        d     = _depth(fn)
+        count = depth_counts[d]
+        idx   = depth_idx[d]
+        depth_idx[d] += 1
+        x = round(40 + (W - 80) * (idx + 0.5) / count)
+        y = round(30 + d * 80)
+        folder_pos[fn["id"]] = (x, y)
+        fn["x"] = x
+        fn["y"] = y
+
+    # Build a map from folder path → folder node id
+    folder_id_by_path: dict[str, str] = {}
+    for fn in folder_nodes:
+        # node_id is "folder:/abs/path"
+        abs_path = str(fn["id"]).replace("folder:", "", 1)
+        folder_id_by_path[abs_path] = fn["id"]
+
+    # Place file nodes orbiting their parent folder
+    # Group files by their parent folder
+    files_per_folder: dict[str, list] = {}
+    for fn in file_nodes:
+        # Find parent folder from graph edges
+        parent_folder_id = None
+        nid = fn["id"]
+        for pred in memory.graph.predecessors(nid):
+            if str(pred).startswith("folder:"):
+                edge_data = memory.graph.get_edge_data(pred, nid, {})
+                if edge_data.get("relation") == "PARENT_FOLDER":
+                    parent_folder_id = pred
+                    break
+        key = parent_folder_id or "__no_parent__"
+        files_per_folder.setdefault(key, []).append(fn)
+
+    for parent_id, flist in files_per_folder.items():
+        if parent_id in folder_pos:
+            px, py = folder_pos[parent_id]
+        else:
+            px, py = cx, cy
+
+        n       = len(flist)
+        radius  = max(45, 20 * n)
+        for k, fn in enumerate(flist):
+            angle  = (2 * math.pi * k / n) - math.pi / 2
+            fn["x"] = round(min(W - 20, max(20, px + radius * math.cos(angle))))
+            fn["y"] = round(min(H - 20, max(20, py + radius * math.sin(angle))))
+
+    # Merge back
+    node_list = folder_nodes + file_nodes
+
+    # ── Build edge list ──────────────────────────────────────────────────
     edges = []
     for source, target, attrs in memory.graph.edges(data=True):
         relation = attrs.get("relation", "RELATED_TO")
-        weight = attrs.get("weight", 0.5)
+        weight   = attrs.get("weight", 0.5)
+
+        # Structural folder edges are thin and de-emphasised
+        if relation in ("PARENT_FOLDER", "CONTAINS_FOLDER"):
+            w = 0.3
+        elif relation == "VERSION_OF":
+            w = 1.0
+        elif relation == "CO_LOCATED":
+            w = 0.7
+        else:
+            w = round(float(weight), 3)
+
         edges.append({
-            "from": source,
-            "to": target,
-            "type": relation,
-            "weight": round(float(weight), 3),
-            "color": EDGE_COLOURS.get(relation, "#5c6278"),
+            "from":   source,
+            "to":     target,
+            "type":   relation,
+            "weight": w,
+            "color":  EDGE_COLOUR_MAP.get(relation, "#5c6278"),
         })
 
-    return {"nodes": nodes, "edges": edges}
+    return {"nodes": node_list, "edges": edges}
+
 
 
 @app.post("/ingest")
@@ -352,3 +488,220 @@ def status():
 def health():
     """Simple liveness check."""
     return {"status": "ok"}
+
+"""
+Changes vs previous version
+────────────────────────────
+1. scope="file" now queries ONLY the primary file by default.
+   Graph expansion (VERSION_OF neighbours only) happens as a fallback
+   when the primary file returns no usable chunks — not unconditionally.
+2. source objects now carry an `is_primary` flag so the frontend can
+   visually distinguish "answered from this file" vs "answered from a
+   related version".
+3. Confidence is computed only over primary-file chunks when available,
+   so a thin primary + rich neighbour doesn't inflate the score.
+"""
+
+from pydantic import BaseModel
+from typing import Optional
+
+class QARequest(BaseModel):
+    question: str
+    scope: str = "all"        # "file" | "all"
+    file_id: Optional[str] = None
+    filename: Optional[str] = None
+
+
+def _qa_retrieve(question: str, target_ids: set, top_k: int = 20) -> list[dict]:
+    """
+    Run hybrid retrieval restricted to `target_ids` and return up to
+    `top_k` chunks sorted by descending score, each dict carrying a
+    'score' key alongside the original chunk fields.
+    """
+    import numpy as _np
+
+    query_embedding = memory.encoder.encode(question, normalize_embeddings=True)
+    sem_scores  = memory._semantic_scores(query_embedding, top_k=50)
+    bm25_scores = memory._bm25_scores(question)
+
+    W_SEM, W_BM25, W_GRAPH = 0.55, 0.25, 0.10
+
+    chunk_scores: dict[str, float] = {}
+    for chunk in memory.chunks:
+        cid = chunk["chunk_id"]
+        pid = chunk["parent_id"]
+        if pid not in target_ids:
+            continue
+        s = (sem_scores.get(pid,  0.0) * W_SEM
+           + bm25_scores.get(pid, 0.0) * W_BM25
+           + memory.pagerank_scores.get(pid, 0.0) * W_GRAPH)
+        chunk_scores[cid] = s
+
+    chunk_map = {c["chunk_id"]: c for c in memory.chunks}
+    ranked_ids = sorted(chunk_scores, key=chunk_scores.get, reverse=True)[:top_k]
+    return [
+        {**chunk_map[cid], "score": chunk_scores[cid]}
+        for cid in ranked_ids
+        if cid in chunk_map
+    ]
+
+
+def _qa_rerank(question: str, chunks: list[dict]) -> list[dict]:
+    """Apply cross-encoder reranking if the reranker is loaded."""
+    reranker = memory._load_reranker()
+    if not reranker or not chunks:
+        return chunks
+    pairs = [(question, c["text"]) for c in chunks]
+    rr_scores = reranker.predict(pairs)
+    return [c for _, c in sorted(zip(rr_scores, chunks), key=lambda x: x[0], reverse=True)]
+
+
+@app.post("/qa")
+def qa_endpoint(req: QARequest):
+    """
+    File-specific or global QA using hybrid retrieval + phi3:mini.
+
+    Scoping rules
+    ─────────────
+    scope="file" + file_id  →  query primary file only.
+                                If that yields no usable chunks, fall back
+                                to VERSION_OF neighbours (same document
+                                lineage), but mark those sources clearly.
+                                RELATED_TO neighbours are never auto-included
+                                in single-file scope — they are unrelated docs.
+
+    scope="all"             →  query all indexed documents.
+    """
+    if not memory.documents:
+        return {"answer": "No documents indexed yet.", "sources": [], "confidence": 0.0}
+
+    question = req.question.strip()
+    if not question:
+        raise HTTPException(status_code=400, detail="Question must not be empty.")
+
+    # ── Step 1: determine primary and (optional) fallback target sets ─────────
+    is_file_scope = req.scope == "file" and bool(req.file_id)
+
+    if is_file_scope:
+        primary_ids  = {req.file_id}
+        # VERSION_OF neighbours only — same document lineage
+        version_ids: set[str] = set()
+        if memory.graph.has_node(req.file_id):
+            for src, tgt, attrs in memory.graph.out_edges(req.file_id, data=True):
+                if attrs.get("relation") == "VERSION_OF":
+                    version_ids.add(tgt)
+            for src, tgt, attrs in memory.graph.in_edges(req.file_id, data=True):
+                if attrs.get("relation") == "VERSION_OF":
+                    version_ids.add(src)
+    else:
+        primary_ids = set(memory.documents.keys())
+        version_ids = set()
+
+    # ── Step 2: retrieve from primary file ────────────────────────────────────
+    MIN_USEFUL_SCORE = 0.05   # chunks below this are noise
+    MIN_CHUNKS_NEEDED = 2     # if fewer than this pass the threshold, try fallback
+
+    primary_chunks = _qa_retrieve(question, primary_ids, top_k=20)
+    primary_chunks = _qa_rerank(question, primary_chunks)
+    useful_primary  = [c for c in primary_chunks if c["score"] >= MIN_USEFUL_SCORE]
+
+    used_fallback = False
+
+    if is_file_scope and len(useful_primary) < MIN_CHUNKS_NEEDED and version_ids:
+        # Not enough signal in the primary file — try version siblings
+        fallback_chunks = _qa_retrieve(question, version_ids, top_k=10)
+        fallback_chunks = _qa_rerank(question, fallback_chunks)
+        useful_fallback = [c for c in fallback_chunks if c["score"] >= MIN_USEFUL_SCORE]
+        if useful_fallback:
+            useful_primary = useful_primary + useful_fallback
+            used_fallback  = True
+
+    # Dynamic K: fewer chunks when confidence is high
+    avg_score = (sum(c["score"] for c in useful_primary[:5]) /
+                 max(len(useful_primary[:5]), 1))
+    K = 4 if avg_score > 0.6 else 7
+    final_chunks = useful_primary[:K]
+
+    if not final_chunks:
+        return {
+            "answer": "Not found in provided files.",
+            "sources": [],
+            "confidence": 0.0,
+            "scoped_to": req.filename or "all files",
+        }
+
+    # ── Step 3: build context ─────────────────────────────────────────────────
+    context_parts: list[str] = []
+    for chunk in final_chunks:
+        pid  = chunk["parent_id"]
+        doc  = memory.documents.get(pid, {})
+        fname = doc.get("filename", "unknown")
+        context_parts.append(f"[{fname}]\n{chunk['text']}")
+
+    context = "\n\n---\n\n".join(context_parts)
+    if len(context) > 14_000:
+        context = context[:14_000] + "\n...[truncated]"
+
+    # ── Step 4: strict prompt → Ollama ───────────────────────────────────────
+    scope_note = (
+        f"You are answering a question about the file '{req.filename}'."
+        if is_file_scope and req.filename
+        else "You are answering a question about the user's personal document collection."
+    )
+
+    prompt = f"""{scope_note}
+Answer using ONLY the context below. Do not use any outside knowledge.
+
+Context:
+{context}
+
+Question:
+{question}
+
+Instructions:
+- Answer directly and concisely.
+- Base your answer ONLY on the context provided.
+- If the answer is not in the context, respond exactly: "Not found in provided files."
+- Do not repeat the question or mention these instructions.
+
+Answer:"""
+
+    try:
+        response = ollama.chat(
+            model="phi3:mini",
+            messages=[{"role": "user", "content": prompt}],
+        )
+        answer = response["message"]["content"].strip()
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"LLM unavailable: {exc}")
+
+    # ── Step 5: confidence + sources ─────────────────────────────────────────
+    # Compute confidence from primary-file chunks only (don't let fallback inflate it)
+    primary_final = [c for c in final_chunks if c["parent_id"] in primary_ids]
+    score_pool    = primary_final if primary_final else final_chunks
+    raw_conf      = sum(c["score"] for c in score_pool) / max(len(score_pool), 1)
+    confidence    = round(min(max(raw_conf, 0.0), 1.0), 3)
+
+    # Build deduplicated source list; mark whether each is the primary file
+    sources: list[dict] = []
+    seen_files: set[str] = set()
+    for chunk in final_chunks:
+        pid   = chunk["parent_id"]
+        doc   = memory.documents.get(pid, {})
+        fname = doc.get("filename", "unknown")
+        if fname not in seen_files:
+            seen_files.add(fname)
+            sources.append({
+                "file":       fname,
+                "path":       _short_path(doc.get("path", "")),
+                "chunk":      chunk["text"][:120] + "…",
+                "is_primary": pid in primary_ids,  # ← NEW: frontend uses this
+            })
+
+    return {
+        "answer":     answer,
+        "sources":    sources,
+        "confidence": confidence,
+        "scoped_to":  req.filename or "all files",
+        "used_fallback": used_fallback,  # ← frontend can show a notice
+    }
