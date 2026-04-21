@@ -1254,7 +1254,7 @@ Return ONLY JSON with keys:
             "not", "but", "can", "all", "any", "one", "two", "three", "file", "files", "document",
         }
 
-        def _token_profile(doc_id: str, top_k: int = 40) -> set[str]:
+        def _token_profile(doc_id: str, top_k: int = 40) -> dict[str, int]:
             counter: dict[str, int] = {}
             for idx in chunk_indices_by_doc.get(doc_id, []):
                 text = self.chunk_texts[idx]
@@ -1264,7 +1264,7 @@ Return ONLY JSON with keys:
                         continue
                     counter[token] = counter.get(token, 0) + 1
             ranked = sorted(counter.items(), key=lambda item: item[1], reverse=True)[:top_k]
-            return {token for token, _ in ranked}
+            return {token: freq for token, freq in ranked}
 
         def _entity_profile(doc_id: str) -> set[str]:
             payload = self.documents.get(doc_id, {}).get("entities") or {}
@@ -1298,6 +1298,7 @@ Return ONLY JSON with keys:
                 embedding_similarity = float(max(0.0, np.dot(vec_a, vec_b)))
 
                 chunk_alignment = 0.0
+                pair_matrix = None
                 indices_a = chunk_indices_by_doc.get(doc_a, [])
                 indices_b = chunk_indices_by_doc.get(doc_b, [])
                 if indices_a and indices_b and self.chunk_embeddings is not None and len(self.chunk_embeddings) > 0:
@@ -1308,11 +1309,26 @@ Return ONLY JSON with keys:
                     backward = float(np.mean(np.max(pair_matrix, axis=0))) if pair_matrix.size else 0.0
                     chunk_alignment = max(0.0, (forward + backward) / 2.0)
 
-                tokens_a = token_profiles.get(doc_a, set())
-                tokens_b = token_profiles.get(doc_b, set())
-                union_tokens = tokens_a | tokens_b
-                shared_tokens = tokens_a & tokens_b
+                tokens_a = token_profiles.get(doc_a, {})
+                tokens_b = token_profiles.get(doc_b, {})
+                set_tokens_a = set(tokens_a.keys())
+                set_tokens_b = set(tokens_b.keys())
+                union_tokens = set_tokens_a | set_tokens_b
+                shared_tokens = set_tokens_a & set_tokens_b
                 keyword_overlap = (len(shared_tokens) / len(union_tokens)) if union_tokens else 0.0
+
+                shared_word_details = sorted(
+                    [
+                        {
+                            "word": token,
+                            "count_a": tokens_a.get(token, 0),
+                            "count_b": tokens_b.get(token, 0),
+                            "support": min(tokens_a.get(token, 0), tokens_b.get(token, 0)),
+                        }
+                        for token in shared_tokens
+                    ],
+                    key=lambda item: (-item["support"], -(item["count_a"] + item["count_b"]), item["word"]),
+                )
 
                 entities_a = entity_profiles.get(doc_a, set())
                 entities_b = entity_profiles.get(doc_b, set())
@@ -1400,7 +1416,55 @@ Return ONLY JSON with keys:
                     entity_preview = sorted(shared_entities)[:3]
                     explanation_parts.append(f"Common entities: {', '.join(entity_preview)}.")
 
-                top_keywords = sorted(shared_tokens)[:6]
+                if shared_tokens:
+                    explanation_parts.append(
+                        f"Common words: {len(shared_tokens)} shared out of {len(union_tokens)} unique candidate words."
+                    )
+
+                top_keywords = [item["word"] for item in shared_word_details[:10]]
+
+                contextual_matches = []
+                if pair_matrix is not None and pair_matrix.size:
+                    # Keep top aligned chunk pairs to show concrete contextual meaning.
+                    candidate_pairs = []
+                    for row_idx in range(pair_matrix.shape[0]):
+                        col_idx = int(np.argmax(pair_matrix[row_idx]))
+                        candidate_pairs.append((float(pair_matrix[row_idx, col_idx]), row_idx, col_idx))
+                    candidate_pairs.sort(key=lambda item: item[0], reverse=True)
+
+                    used_cols = set()
+                    for sim_value, row_idx, col_idx in candidate_pairs:
+                        if col_idx in used_cols:
+                            continue
+                        used_cols.add(col_idx)
+                        a_chunk = self.chunk_texts[indices_a[row_idx]].strip().replace("\n", " ")
+                        b_chunk = self.chunk_texts[indices_b[col_idx]].strip().replace("\n", " ")
+                        if not a_chunk or not b_chunk:
+                            continue
+                        contextual_matches.append(
+                            {
+                                "similarity": round(max(0.0, sim_value), 4),
+                                "snippet_a": a_chunk[:180],
+                                "snippet_b": b_chunk[:180],
+                            }
+                        )
+                        if len(contextual_matches) >= 3:
+                            break
+
+                if chunk_calibrated >= 0.72 and embedding_calibrated >= 0.68:
+                    context_label = "strong contextual alignment"
+                    interpretation = "Both files discuss highly similar ideas and phrasing across multiple passages."
+                elif chunk_calibrated >= 0.56 and embedding_calibrated >= 0.52:
+                    context_label = "moderate contextual alignment"
+                    interpretation = "The files share meaningful topics, but emphasis differs in some sections."
+                elif chunk_calibrated >= 0.42 or embedding_calibrated >= 0.42:
+                    context_label = "partial contextual overlap"
+                    interpretation = "Some related concepts appear, but the broader context is mixed."
+                else:
+                    context_label = "low contextual alignment"
+                    interpretation = "The files may share a few terms, but their main context differs."
+
+                shared_themes = [item["word"] for item in shared_word_details[:6]]
 
                 pair_payload = {
                     "doc_a": doc_a,
@@ -1418,6 +1482,26 @@ Return ONLY JSON with keys:
                         "entity_overlap": round(float(entity_overlap), 4),
                     },
                     "shared_keywords": top_keywords,
+                    "word_overlap": {
+                        "shared_count": len(shared_tokens),
+                        "union_count": len(union_tokens),
+                        "ratio": round(float(keyword_overlap), 4),
+                        "top_shared_words": top_keywords,
+                        "top_shared_word_details": [
+                            {
+                                "word": item["word"],
+                                "count_a": item["count_a"],
+                                "count_b": item["count_b"],
+                            }
+                            for item in shared_word_details[:10]
+                        ],
+                    },
+                    "contextual_meaning": {
+                        "label": context_label,
+                        "interpretation": interpretation,
+                        "shared_themes": shared_themes,
+                        "matched_passages": contextual_matches,
+                    },
                     "shared_entities": sorted(shared_entities)[:6],
                     "explanation": " ".join(explanation_parts),
                 }

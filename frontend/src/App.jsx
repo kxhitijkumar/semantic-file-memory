@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useMemo } from "react";
 
 const API_BASE = "http://localhost:8000";
 
@@ -95,17 +95,27 @@ const GLOBAL_CSS = `
     position: fixed;
     bottom: 88px;
     right: 24px;
-    width: 400px;
-    height: 580px;
+    width: min(420px, calc(100vw - 32px));
+    height: min(640px, calc(100vh - 120px));
     z-index: 1000;
-    border-radius: 20px;
+    border-radius: 22px;
     overflow: hidden;
     display: flex;
     flex-direction: column;
-    background: ${T.surface};
+    background: linear-gradient(180deg, ${T.surface} 0%, ${T.bg} 100%);
     border: 1px solid ${T.borderMd};
-    box-shadow: 0 24px 80px rgba(0,0,0,.7), 0 0 0 1px rgba(79,128,255,.08);
+    box-shadow: 0 24px 80px rgba(0,0,0,.7), 0 0 0 1px rgba(79,128,255,.08), inset 0 1px 0 rgba(255,255,255,.04);
     animation: popUp .28s cubic-bezier(.34,1.4,.64,1) both;
+  }
+  .chat-popup::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    pointer-events: none;
+    background:
+      radial-gradient(500px 160px at 100% 0%, rgba(46,232,200,.12), transparent 70%),
+      radial-gradient(420px 180px at 0% 100%, rgba(79,128,255,.12), transparent 70%);
+    opacity: .85;
   }
   .chat-popup.closing {
     animation: popDown .2s ease both;
@@ -127,6 +137,20 @@ const GLOBAL_CSS = `
   }
   .chat-fab:hover { transform: scale(1.08); }
   .chat-fab.has-file { animation: btnPulse 2.5s ease infinite; }
+  @media (max-width: 720px) {
+    .chat-popup {
+      right: 8px;
+      left: 8px;
+      bottom: 78px;
+      width: auto;
+      height: min(700px, calc(100vh - 92px));
+      border-radius: 18px;
+    }
+    .chat-fab {
+      right: 12px;
+      bottom: 12px;
+    }
+  }
   .typing-dot {
     width: 6px; height: 6px; border-radius: 50%; background: ${T.muted};
     display: inline-block; margin: 0 2px;
@@ -204,7 +228,7 @@ function SearchBar({ value, onChange, onSearch, loading }) {
 }
 
 /* ─── ResultCard ─────────────────────────────────────────────────────────── */
-function ResultCard({ result, selected, onClick, onAsk, index }) {
+function ResultCard({ result, selected, onClick, onAsk, onView, index }) {
   const ec = EXT_COLOR[result.ext]||EXT_COLOR.txt;
   const pct = Math.round(result.final*100);
   const rankColor = pct>=80?T.green:pct>=60?T.amber:T.muted;
@@ -237,17 +261,31 @@ function ResultCard({ result, selected, onClick, onAsk, index }) {
         </div>
       )}
       {selected&&(
-        <button onClick={e=>{e.stopPropagation();onAsk(result);}}
-          style={{ marginTop:10,width:"100%",padding:"7px 12px",background:T.blueDim,
-            border:`1px solid ${T.blue}44`,borderRadius:8,color:T.blue,fontSize:11,fontWeight:600,
-            cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6,transition:"all .15s",fontFamily:"inherit" }}
-          onMouseEnter={e=>{e.currentTarget.style.background=`${T.blue}22`;}}
-          onMouseLeave={e=>{e.currentTarget.style.background=T.blueDim;}}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-            <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-          </svg>
-          Ask about this file
-        </button>
+        <div style={{ marginTop:10,display:"flex",gap:8 }}>
+          <button onClick={e=>{e.stopPropagation();onView(result);}}
+            style={{ flex:1,padding:"7px 12px",background:T.tealDim,
+              border:`1px solid ${T.teal}44`,borderRadius:8,color:T.teal,fontSize:11,fontWeight:600,
+              cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6,transition:"all .15s",fontFamily:"inherit" }}
+            onMouseEnter={e=>{e.currentTarget.style.background=`${T.teal}22`;}}
+            onMouseLeave={e=>{e.currentTarget.style.background=T.tealDim;}}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
+              <circle cx="12" cy="12" r="3"/>
+            </svg>
+            View File
+          </button>
+          <button onClick={e=>{e.stopPropagation();onAsk(result);}}
+            style={{ flex:1,padding:"7px 12px",background:T.blueDim,
+              border:`1px solid ${T.blue}44`,borderRadius:8,color:T.blue,fontSize:11,fontWeight:600,
+              cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",gap:6,transition:"all .15s",fontFamily:"inherit" }}
+            onMouseEnter={e=>{e.currentTarget.style.background=`${T.blue}22`;}}
+            onMouseLeave={e=>{e.currentTarget.style.background=T.blueDim;}}>
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+              <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+            </svg>
+            Ask about this file
+          </button>
+        </div>
       )}
     </div>
   );
@@ -269,6 +307,84 @@ const Empty = ({ icon, title, sub }) => (
     {sub&&<div style={{ fontSize:11,color:T.faint,lineHeight:1.65,maxWidth:220 }}>{sub}</div>}
   </div>
 );
+
+/* ─── File Viewer Modal ──────────────────────────────────────────────────── */
+function FileViewer({ open, file, content, loading, onClose }) {
+  if (!open) return null;
+  
+  return (
+    <>
+      {/* Backdrop */}
+      <div onClick={onClose} style={{
+        position:"fixed",inset:0,background:"rgba(0,0,0,.6)",zIndex:999,backdropFilter:"blur(2px)",
+        animation:"fadeUp .2s ease",pointerEvents:open?"auto":"none"
+      }}/>
+      
+      {/* Modal */}
+      <div style={{
+        position:"fixed",inset:"5%",zIndex:1000,borderRadius:18,overflow:"hidden",
+        display:"flex",flexDirection:"column",background:T.surface,border:`1px solid ${T.borderMd}`,
+        boxShadow:`0 24px 80px rgba(0,0,0,.7),inset 0 1px 0 rgba(255,255,255,.04)`,
+        animation:"popUp .28s cubic-bezier(.34,1.4,.64,1) both"
+      }}>
+        {/* Header */}
+        <div style={{
+          display:"flex",alignItems:"center",justifyContent:"space-between",
+          padding:"16px 24px",borderBottom:`1px solid ${T.border}`,background:T.raised,flexShrink:0
+        }}>
+          <div style={{ display:"flex",alignItems:"center",gap:12,minWidth:0 }}>
+            {file&&<div style={{
+              width:32,height:32,borderRadius:8,background:EXT_COLOR[file.ext]?.bg,
+              display:"flex",alignItems:"center",justifyContent:"center",flexShrink:0
+            }}>
+              <span style={{ fontSize:9,fontWeight:700,color:EXT_COLOR[file.ext]?.fg,fontFamily:"'DM Mono'" }}>
+                {file.ext.toUpperCase()}
+              </span>
+            </div>}
+            <div style={{ minWidth:0 }}>
+              <div style={{ fontSize:13,fontWeight:600,color:T.text,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>
+                {file?.file}
+              </div>
+              <div style={{ fontSize:11,color:T.faint,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap" }}>
+                {file?.path}
+              </div>
+            </div>
+          </div>
+          <button onClick={onClose} style={{
+            background:"transparent",border:"none",cursor:"pointer",padding:8,display:"flex",
+            alignItems:"center",justifyContent:"center",color:T.muted,flexShrink:0,
+            transition:"color .15s",fontSize:18
+          }} onMouseEnter={e=>e.currentTarget.style.color=T.text}
+          onMouseLeave={e=>e.currentTarget.style.color=T.muted}>
+            ✕
+          </button>
+        </div>
+
+        {/* Content */}
+        <div style={{
+          flex:1,overflowY:"auto",padding:"20px 24px",fontFamily:"'DM Mono',monospace",
+          fontSize:12,lineHeight:1.6,color:T.text
+        }}>
+          {loading ? (
+            <div style={{ display:"flex",alignItems:"center",justifyContent:"center",height:"100%",color:T.muted }}>
+              <div style={{ display:"flex",alignItems:"center",gap:8 }}>
+                <div style={{
+                  width:14,height:14,border:`2px solid ${T.faint}`,borderTopColor:T.teal,
+                  borderRadius:"50%",animation:"spin .7s linear infinite"
+                }}/>
+                Loading file...
+              </div>
+            </div>
+          ) : (
+            <pre style={{ margin:0,whiteSpace:"pre-wrap",wordWrap:"break-word",color:T.text }}>
+              {content}
+            </pre>
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
 
 /* ─── Detail panel ───────────────────────────────────────────────────────── */
 function DetailPanel({ result }) {
@@ -457,7 +573,11 @@ function useForceGraph(graphData, filter, showFolders, W, H) {
 }
 
 /* ─── Graph panel ─────────────────────────────────────────────────────────── */
-function GraphPanel({ graphData, highlightId, onNodeSelect }) {
+function GraphPanel({
+  graphData,
+  highlightId,
+  onNodeSelect,
+}) {
   const INITIAL_ZOOM = 1.1;
   const containerRef  = useRef(null);
   const [dims, setDims]           = useState({ w: 700, h: 480 });
@@ -468,10 +588,7 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
   const [pan, setPan]             = useState({ x: 0, y: 0 });
   const [zoom, setZoom]           = useState(INITIAL_ZOOM);
   const [isDragging, setIsDragging]   = useState(false);
-  const [dragNode, setDragNode]   = useState(null);
-  const [pinnedPositions, setPinnedPositions] = useState({});
   const panStart = useRef(null);
-  const dragStart = useRef(null);
 
   // Measure container
   useEffect(() => {
@@ -483,15 +600,63 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
     return () => ro.disconnect();
   }, []);
 
-  const { positions } = useForceGraph(graphData, filter, showFolders, dims.w, dims.h);
+  const positions = useMemo(() => {
+    if (!graphData || !graphData.nodes?.length) return {};
+
+    const nodes = graphData.nodes.filter(n => showFolders || n.nodeType !== "folder");
+    if (!nodes.length) return {};
+
+    const byType = {
+      folders: nodes.filter(n => n.nodeType === "folder").sort((a, b) => (a.label || "").localeCompare(b.label || "")),
+      files: nodes.filter(n => n.nodeType !== "folder").sort((a, b) => {
+        const aKey = `${a.ext || "zzz"}:${a.label || ""}`;
+        const bKey = `${b.ext || "zzz"}:${b.label || ""}`;
+        return aKey.localeCompare(bKey);
+      }),
+    };
+
+    const cx = dims.w / 2;
+    const cy = dims.h / 2;
+    const minDim = Math.max(320, Math.min(dims.w, dims.h));
+    const innerBase = Math.max(64, Math.min(130, minDim * 0.18));
+    const outerBase = Math.max(140, Math.min(320, minDim * 0.38));
+
+    const out = {};
+
+    const placeRing = (arr, baseRadius, spacing) => {
+      if (!arr.length) return;
+      const capacity = Math.max(8, Math.floor((2 * Math.PI * baseRadius) / spacing));
+      arr.forEach((node, index) => {
+        const ring = Math.floor(index / capacity);
+        const indexInRing = index % capacity;
+        const countInRing = Math.min(capacity, arr.length - ring * capacity);
+        const radius = baseRadius + ring * 44;
+        const phase = ring * 0.35;
+        const angle = (indexInRing / countInRing) * Math.PI * 2 + phase - Math.PI / 2;
+        out[node.id] = {
+          x: cx + Math.cos(angle) * radius,
+          y: cy + Math.sin(angle) * radius,
+        };
+      });
+    };
+
+    placeRing(byType.folders, innerBase, 68);
+    placeRing(byType.files, outerBase, 54);
+
+    return out;
+  }, [graphData, showFolders, dims.w, dims.h]);
+  const inspectorOverlay = dims.w < 980;
+  const inspectorWidth = inspectorOverlay
+    ? Math.max(240, Math.min(320, Math.round(dims.w * 0.42)))
+    : 280;
 
   if (!graphData || !graphData.nodes.length)
     return <Empty icon="⬡" title="No graph data" sub="Index some documents first — the knowledge graph will appear here" />;
 
-  // Merge simulated positions with user-pinned positions
+  // Fixed node positions
   const merged = {};
   graphData.nodes.forEach(n => {
-    const p = pinnedPositions[n.id] || positions[n.id];
+    const p = positions[n.id];
     if (p) merged[n.id] = p;
   });
 
@@ -506,6 +671,8 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
     if (filter !== "ALL" && e.type !== filter) return false;
     return nodeMap[e.from] && nodeMap[e.to];
   });
+  const fileCount = visibleNodes.filter(n => n.nodeType !== "folder").length;
+  const folderCount = visibleNodes.filter(n => n.nodeType === "folder").length;
 
   // Selected node neighbours
   const neighbourIds = new Set();
@@ -533,17 +700,11 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
   };
 
   const handleCanvasMouseDown = (e) => {
-    if (dragNode) return;
     panStart.current = { mx: e.clientX, my: e.clientY, px: pan.x, py: pan.y };
     setIsDragging(false);
   };
 
   const handleCanvasMouseMove = (e) => {
-    if (dragNode) {
-      const sv = toSVG(e.clientX, e.clientY);
-      setPinnedPositions(p => ({ ...p, [dragNode]: { x: sv.x, y: sv.y } }));
-      return;
-    }
     if (!panStart.current) return;
     const dx = e.clientX - panStart.current.mx;
     const dy = e.clientY - panStart.current.my;
@@ -553,7 +714,6 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
 
   const handleCanvasMouseUp = () => {
     panStart.current = null;
-    setDragNode(null);
     setIsDragging(false);
   };
 
@@ -561,12 +721,6 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
     e.preventDefault();
     const factor = e.deltaY < 0 ? 1.12 : 0.88;
     setZoom(z => Math.max(0.3, Math.min(3, z * factor)));
-  };
-
-  const handleNodeMouseDown = (e, nodeId) => {
-    e.stopPropagation();
-    dragStart.current = { id: nodeId, moved: false };
-    setDragNode(nodeId);
   };
 
   const handleNodeClick = (e, nodeId) => {
@@ -601,6 +755,7 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
     PARENT_FOLDER:   { color: T.faint,  width: 0.8, dash: null,    label: "In folder"       },
     CONTAINS_FOLDER: { color: T.faint,  width: 0.6, dash: "3 3",   label: "Contains"        },
   };
+  const activeEdgeLabel = filter === "ALL" ? "All relationships" : (EDGE_META[filter]?.label || filter.replace(/_/g, " "));
 
   const FILE_ICON_PATH = "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6";
   const FOLDER_ICON_PATH = "M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z";
@@ -616,114 +771,124 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
     <div style={{ display: "flex", flexDirection: "column", height: "100%", overflow: "hidden" }}>
 
       {/* ── Toolbar ── */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "12px 14px",
-        borderBottom: `1px solid ${T.border}`, flexShrink: 0, flexWrap: "wrap", background: T.panel }}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 10, padding: "12px 14px",
+        borderBottom: `1px solid ${T.border}`, flexShrink: 0,
+        background: `linear-gradient(180deg, ${T.panel} 0%, ${T.surface} 100%)` }}>
 
-        {/* Filter Section Label with Icon */}
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginRight: 2 }}>
-          <FilterIcon />
-          <span style={{ fontSize: 9, color: T.faint, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>Edges</span>
-        </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 7, padding: "6px 10px",
+            borderRadius: 10, background: T.raised, border: `1px solid ${T.borderMd}` }}>
+            <NetworkIcon />
+            <span style={{ fontSize: 10, color: T.faint, letterSpacing: "0.08em", fontWeight: 700, textTransform: "uppercase" }}>Graph View</span>
+          </div>
 
-        {/* Edge filters */}
-        {["ALL", "VERSION_OF", "CO_LOCATED", "RELATED_TO", "SHARES_ENTITY", "SAME_TOPIC"].map(f => {
-          const active = filter === f;
-          const c = EDGE_COLOR[f] || T.blue;
-          return (
-            <button key={f} onClick={() => setFilter(f)}
-              style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.05em", padding: "5px 12px",
-                borderRadius: 16, border: `1.2px solid ${active ? c : T.border}`,
-                background: active ? `${c}15` : "transparent",
-                color: active ? c : T.muted, cursor: "pointer", fontFamily: "inherit",
-                transition: "all .18s", display: "inline-block",
-                boxShadow: active ? `0 0 0 2px ${c}08` : "none" }}
-              title={f === "ALL" ? "Show all relationships" : `Filter by ${f.replace(/_/g, " ").toLowerCase()}`}>
-              {f === "ALL" ? "All" : f.replace(/_/g, " ")}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: 10,
+            background: T.raised, border: `1px solid ${T.border}` }}>
+            <span style={{ fontSize: 10, color: T.faint }}>Nodes</span>
+            <span style={{ fontSize: 11, color: T.text, fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{visibleNodes.length}</span>
+            <span style={{ fontSize: 10, color: T.border }}>·</span>
+            <span style={{ fontSize: 10, color: T.faint }}>Files {fileCount}</span>
+            <span style={{ fontSize: 10, color: T.faint }}>Folders {folderCount}</span>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: 10,
+            background: T.raised, border: `1px solid ${T.border}` }}>
+            <span style={{ fontSize: 10, color: T.faint }}>Edges</span>
+            <span style={{ fontSize: 11, color: T.text, fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{visibleEdges.length}</span>
+            <span style={{ fontSize: 10, color: T.faint }}>{activeEdgeLabel}</span>
+          </div>
+
+          <div style={{ flex: 1 }} />
+
+          <div style={{ display: "flex", alignItems: "center", gap: 4, padding: 3,
+            borderRadius: 10, border: `1px solid ${T.border}`, background: T.raised }}>
+            <button onClick={() => handleZoomBtn(-1)}
+              style={{ width: 28, height: 28, borderRadius: 7, border: "none",
+                background: "transparent", color: T.muted, cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontFamily: "inherit", transition: "all .15s" }}
+              onMouseEnter={e => { e.currentTarget.style.color = T.text; e.currentTarget.style.background = T.panel; }}
+              onMouseLeave={e => { e.currentTarget.style.color = T.muted; e.currentTarget.style.background = "transparent" }}
+              title="Zoom out">
+              <ZoomOutIcon />
             </button>
-          );
-        })}
-
-        {/* Divider */}
-        <div style={{ height: 18, width: 1, background: T.border, margin: "0 4px", opacity: 0.5 }} />
-
-        {/* Folder toggle */}
-        <button onClick={() => setShowFolders(v => !v)}
-          style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 600,
-            padding: "5px 12px", borderRadius: 16, cursor: "pointer", fontFamily: "inherit",
-            border: `1.2px solid ${showFolders ? T.teal : T.border}`,
-            background: showFolders ? `${T.teal}12` : "transparent",
-            color: showFolders ? T.teal : T.muted, transition: "all .18s", 
-            boxShadow: showFolders ? `0 0 0 2px ${T.teal}08` : "none" }}
-          title="Toggle folder nodes">
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
-            <path d={FOLDER_ICON_PATH} />
-          </svg>
-          Folders
-        </button>
-
-        <div style={{ flex: 1 }} />
-
-        {/* Node count badge */}
-        <div style={{ fontSize: 11, color: T.faint, fontFamily: "'DM Mono',monospace", padding: "5px 10px",
-          background: T.raised, borderRadius: 12, border: `1px solid ${T.borderMd}`, display: "flex", alignItems: "center", gap: 6 }}>
-          <NetworkIcon />
-          <span><strong style={{ color: T.text }}>{visibleNodes.length}</strong> nodes</span>
-          <span style={{ color: T.border }}>·</span>
-          <span><strong style={{ color: T.text }}>{visibleEdges.length}</strong> edges</span>
+            <button onClick={() => handleZoomBtn(1)}
+              style={{ width: 28, height: 28, borderRadius: 7, border: "none",
+                background: "transparent", color: T.muted, cursor: "pointer",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                fontFamily: "inherit", transition: "all .15s" }}
+              onMouseEnter={e => { e.currentTarget.style.color = T.text; e.currentTarget.style.background = T.panel; }}
+              onMouseLeave={e => { e.currentTarget.style.color = T.muted; e.currentTarget.style.background = "transparent" }}
+              title="Zoom in">
+              <ZoomInIcon />
+            </button>
+            <button onClick={handleReset}
+              style={{ fontSize: 10, fontWeight: 600, padding: "6px 10px", borderRadius: 7,
+                border: "none", background: T.panel, color: T.muted,
+                cursor: "pointer", fontFamily: "inherit", transition: "all .15s", display: "flex", alignItems: "center", gap: 5 }}
+              onMouseEnter={e => { e.currentTarget.style.color = T.text; }}
+              onMouseLeave={e => { e.currentTarget.style.color = T.muted; }}
+              title="Reset zoom and pan">
+              <ResetIcon />
+              Reset
+            </button>
+          </div>
         </div>
 
-        {/* Divider */}
-        <div style={{ height: 18, width: 1, background: T.border, margin: "0 4px", opacity: 0.5 }} />
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 6, marginRight: 2 }}>
+            <FilterIcon />
+            <span style={{ fontSize: 9, color: T.faint, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase" }}>Edges</span>
+          </div>
 
-        {/* Zoom controls group */}
-        <div style={{ display: "flex", alignItems: "center", gap: 2 }}>
-          <button onClick={() => handleZoomBtn(-1)}
-            style={{ width: 28, height: 28, borderRadius: 8, border: `1px solid ${T.border}`,
-              background: T.raised, color: T.muted, cursor: "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontFamily: "inherit", transition: "all .15s" }}
-            onMouseEnter={e => { e.currentTarget.style.color = T.text; e.currentTarget.style.borderColor = T.borderMd; e.currentTarget.style.background = T.borderMd; }}
-            onMouseLeave={e => { e.currentTarget.style.color = T.muted; e.currentTarget.style.borderColor = T.border; e.currentTarget.style.background = T.raised; }}
-            title="Zoom out">
-            <ZoomOutIcon />
-          </button>
-          <button onClick={() => handleZoomBtn(1)}
-            style={{ width: 28, height: 28, borderRadius: 8, border: `1px solid ${T.border}`,
-              background: T.raised, color: T.muted, cursor: "pointer",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              fontFamily: "inherit", transition: "all .15s" }}
-            onMouseEnter={e => { e.currentTarget.style.color = T.text; e.currentTarget.style.borderColor = T.borderMd; e.currentTarget.style.background = T.borderMd; }}
-            onMouseLeave={e => { e.currentTarget.style.color = T.muted; e.currentTarget.style.borderColor = T.border; e.currentTarget.style.background = T.raised; }}
-            title="Zoom in">
-            <ZoomInIcon />
+          {["ALL", "VERSION_OF", "CO_LOCATED", "RELATED_TO", "SHARES_ENTITY", "SAME_TOPIC"].map(f => {
+            const active = filter === f;
+            const c = EDGE_COLOR[f] || T.blue;
+            return (
+              <button key={f} onClick={() => setFilter(f)}
+                style={{ fontSize: 10, fontWeight: 600, letterSpacing: "0.04em", padding: "5px 12px",
+                  borderRadius: 16, border: `1.2px solid ${active ? c : T.border}`,
+                  background: active ? `${c}18` : T.panel,
+                  color: active ? c : T.muted, cursor: "pointer", fontFamily: "inherit",
+                  transition: "all .18s", boxShadow: active ? `0 0 0 2px ${c}11` : "none" }}
+                title={f === "ALL" ? "Show all relationships" : `Filter by ${f.replace(/_/g, " ").toLowerCase()}`}>
+                {f === "ALL" ? "All" : f.replace(/_/g, " ")}
+              </button>
+            );
+          })}
+
+          <button onClick={() => setShowFolders(v => !v)}
+            style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, fontWeight: 600,
+              padding: "5px 12px", borderRadius: 16, cursor: "pointer", fontFamily: "inherit",
+              border: `1.2px solid ${showFolders ? T.teal : T.border}`,
+              background: showFolders ? `${T.teal}15` : T.panel,
+              color: showFolders ? T.teal : T.muted, transition: "all .18s",
+              boxShadow: showFolders ? `0 0 0 2px ${T.teal}12` : "none" }}
+            title="Toggle folder nodes">
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round">
+              <path d={FOLDER_ICON_PATH} />
+            </svg>
+            Folders
           </button>
         </div>
-
-        {/* Reset button */}
-        <button onClick={handleReset}
-          style={{ fontSize: 10, fontWeight: 600, padding: "5px 12px", borderRadius: 8,
-            border: `1px solid ${T.border}`, background: T.raised, color: T.muted,
-            cursor: "pointer", fontFamily: "inherit", transition: "all .15s", display: "flex", alignItems: "center", gap: 5 }}
-          onMouseEnter={e => { e.currentTarget.style.color = T.text; e.currentTarget.style.borderColor = T.borderMd; }}
-          onMouseLeave={e => { e.currentTarget.style.color = T.muted; e.currentTarget.style.borderColor = T.border; }}
-          title="Reset zoom and pan">
-          <ResetIcon />
-          Reset
-        </button>
       </div>
 
       {/* ── Canvas + inspector ── */}
-      <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden" }}>
+      <div style={{ flex: 1, display: "flex", minHeight: 0, overflow: "hidden", position: "relative" }}>
 
         {/* SVG canvas */}
         <div ref={containerRef} style={{ flex: 1, position: "relative", overflow: "hidden",
-          background: `radial-gradient(ellipse at 35% 40%, ${T.raised} 0%, ${T.bg} 65%)`,
-          cursor: isDragging ? "grabbing" : dragNode ? "grabbing" : "grab" }}
+          background: `radial-gradient(ellipse at 15% 20%, ${T.panel} 0%, ${T.bg} 55%), radial-gradient(ellipse at 85% 85%, ${T.raised} 0%, transparent 60%)`,
+          cursor: isDragging ? "grabbing" : "grab" }}
           onMouseDown={handleCanvasMouseDown}
           onMouseMove={handleCanvasMouseMove}
           onMouseUp={handleCanvasMouseUp}
           onMouseLeave={handleCanvasMouseUp}
           onWheel={handleWheel}>
+
+          <div style={{ position: "absolute", inset: 0, pointerEvents: "none",
+            backgroundImage: `linear-gradient(${T.border}20 1px, transparent 1px), linear-gradient(90deg, ${T.border}20 1px, transparent 1px)`,
+            backgroundSize: "36px 36px", opacity: 0.35 }} />
 
           <svg width={dims.w} height={dims.h} style={{ display: "block", userSelect: "none" }}>
             <defs>
@@ -745,6 +910,12 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
             </defs>
 
             <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
+
+              {/* Fixed-layout guide rings */}
+              <circle cx={dims.w / 2} cy={dims.h / 2} r={Math.max(64, Math.min(130, Math.max(320, Math.min(dims.w, dims.h)) * 0.18))}
+                fill="none" stroke={T.border} strokeWidth="1" strokeDasharray="3 6" strokeOpacity="0.35" />
+              <circle cx={dims.w / 2} cy={dims.h / 2} r={Math.max(140, Math.min(320, Math.max(320, Math.min(dims.w, dims.h)) * 0.38))}
+                fill="none" stroke={T.border} strokeWidth="1" strokeDasharray="5 8" strokeOpacity="0.28" />
 
               {/* ── Edges ── */}
               {visibleEdges.map((e, i) => {
@@ -793,7 +964,6 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
                   <g key={n.id}
                     onMouseEnter={() => setHovered(n.id)}
                     onMouseLeave={() => setHovered(null)}
-                    onMouseDown={e => handleNodeMouseDown(e, n.id)}
                     onClick={e => handleNodeClick(e, n.id)}
                     style={{ cursor: "pointer" }}>
 
@@ -860,23 +1030,41 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
             </g>
           </svg>
 
-          {/* Zoom hint */}
-          <div style={{ position: "absolute", bottom: 10, left: 12, fontSize: 10,
-            color: T.faint, fontFamily: "'DM Mono',monospace", pointerEvents: "none" }}>
-            Scroll to zoom · Drag to pan · Click node to inspect
-          </div>
-
-          {/* Zoom level indicator */}
-          <div style={{ position: "absolute", bottom: 10, right: 12, fontSize: 10,
-            color: T.faint, fontFamily: "'DM Mono',monospace", pointerEvents: "none" }}>
-            {Math.round(zoom * 100)}%
+          <div style={{ position: "absolute", bottom: 12, left: 12, display: "flex", flexDirection: "column", gap: 6, pointerEvents: "none" }}>
+            <div style={{ fontSize: 10, color: T.muted, fontFamily: "'DM Mono',monospace",
+              background: `${T.surface}cc`, border: `1px solid ${T.border}`, borderRadius: 8, padding: "5px 8px" }}>
+              Scroll to zoom · Drag canvas · Nodes are fixed
+            </div>
+            <div style={{ fontSize: 10, color: T.faint, fontFamily: "'DM Mono',monospace",
+              background: `${T.surface}cc`, border: `1px solid ${T.border}`, borderRadius: 8, padding: "5px 8px", width: "fit-content" }}>
+              Zoom {Math.round(zoom * 100)}%
+            </div>
           </div>
         </div>
 
         {/* ── Node inspector panel ── */}
         {selectedNode && (
-          <div className="fu" style={{ width: 240, flexShrink: 0, borderLeft: `1px solid ${T.border}`,
-            background: T.surface, overflowY: "auto", padding: "16px 14px", display: "flex", flexDirection: "column" }}>
+          <div className="fu" style={{
+            width: inspectorWidth,
+            flexShrink: 0,
+            borderLeft: `1px solid ${T.border}`,
+            background: inspectorOverlay ? `${T.surface}f5` : T.surface,
+            overflowY: "auto",
+            padding: "16px 14px",
+            display: "flex",
+            flexDirection: "column",
+            ...(inspectorOverlay
+              ? {
+                  position: "absolute",
+                  top: 0,
+                  right: 0,
+                  bottom: 0,
+                  zIndex: 6,
+                  boxShadow: "-16px 0 30px rgba(0,0,0,.35)",
+                  backdropFilter: "blur(4px)",
+                }
+              : {}),
+          }}>
 
             {/* Header with icon */}
             <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16, paddingBottom: 12, borderBottom: `1px solid ${T.border}` }}>
@@ -1060,8 +1248,10 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
       </div>
 
       {/* ── Legend ── */}
-      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "8px 14px",
-        borderTop: `1px solid ${T.border}`, flexShrink: 0, flexWrap: "wrap" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "10px 14px",
+        borderTop: `1px solid ${T.border}`, flexShrink: 0, flexWrap: "wrap",
+        background: `linear-gradient(0deg, ${T.panel} 0%, ${T.surface} 100%)` }}>
+        <span style={{ fontSize: 9, color: T.faint, letterSpacing: "0.09em", fontWeight: 700, textTransform: "uppercase" }}>Legend</span>
         {[
           ["Version of",     T.blue,   false],
           ["Co-located",     T.teal,   false],
@@ -1070,14 +1260,16 @@ function GraphPanel({ graphData, highlightId, onNodeSelect }) {
           ["Same topic",     T.violet, true ],
           ["Folder similar", T.green,  true ],
         ].map(([label, color, dashed]) => (
-          <div key={label} style={{ display: "flex", alignItems: "center", gap: 5 }}>
+          <div key={label} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 7px",
+            borderRadius: 7, border: `1px solid ${T.border}`, background: T.raised }}>
             <div style={{ width: 16, height: 2, borderRadius: 1,
               background: dashed ? "transparent" : color,
               ...(dashed ? { borderTop: `2px dashed ${color}` } : {}) }} />
             <span style={{ fontSize: 10, color: T.faint }}>{label}</span>
           </div>
         ))}
-        <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 7px",
+          borderRadius: 7, border: `1px solid ${T.border}`, background: T.raised }}>
           <div style={{ width: 10, height: 10, background: T.faint, opacity: 0.45, borderRadius: 2 }} />
           <span style={{ fontSize: 10, color: T.faint }}>folder node</span>
         </div>
@@ -1320,6 +1512,12 @@ function SimilarityPanel() {
           {result && result.pairs?.length > 0 && result.pairs.map((pair, index) => {
             const pct = Math.round((pair.score || 0) * 100);
             const rankColor = pct >= 75 ? T.green : pct >= 55 ? T.amber : T.muted;
+            const sharedCount = pair.word_overlap?.shared_count || 0;
+            const unionCount = pair.word_overlap?.union_count || 0;
+            const wordPct = Math.round((pair.word_overlap?.ratio || 0) * 100);
+            const commonWords = pair.word_overlap?.top_shared_words?.length
+              ? pair.word_overlap.top_shared_words
+              : (pair.shared_keywords || []);
             return (
               <div key={`${pair.doc_a}-${pair.doc_b}-${index}`} className="fu"
                 style={{ background: T.raised, borderRadius: 12, border: `1px solid ${T.border}`, padding: "12px 13px" }}>
@@ -1333,6 +1531,14 @@ function SimilarityPanel() {
                 <div style={{ fontSize: 10, color: T.faint, marginBottom: 8 }}>{pair.label}</div>
                 <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.65, marginBottom: 10 }}>{pair.explanation}</div>
 
+                {pair.contextual_meaning?.label && (
+                  <div style={{ marginBottom: 10, padding: "8px 9px", borderRadius: 8, background: T.panel, border: `1px solid ${T.border}` }}>
+                    <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.08em", marginBottom: 4 }}>CONTEXTUAL MEANING</div>
+                    <div style={{ fontSize: 11, color: T.text, fontWeight: 600, marginBottom: 3 }}>{pair.contextual_meaning.label}</div>
+                    <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.55 }}>{pair.contextual_meaning.interpretation}</div>
+                  </div>
+                )}
+
                 <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 10 }}>
                   <div>
                     <Bar label="Semantic meaning" value={pair.metrics?.embedding_similarity || 0} color={T.blue} />
@@ -1344,10 +1550,43 @@ function SimilarityPanel() {
                   </div>
                 </div>
 
-                {pair.shared_keywords?.length > 0 && (
+                <div style={{ marginTop: 9, fontSize: 11, color: T.muted }}>
+                  Common words: <span style={{ color: T.text, fontWeight: 600 }}>{sharedCount}</span>
+                  {unionCount > 0 ? ` / ${unionCount} unique words` : ""}
+                  {unionCount > 0 ? ` (${wordPct}%)` : ""}
+                </div>
+
+                {commonWords.length > 0 && (
                   <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 8 }}>
-                    {pair.shared_keywords.slice(0, 8).map((kw) => (
+                    {commonWords.slice(0, 10).map((kw) => (
                       <Pill key={kw} label={kw} fg={T.teal} bg={T.tealDim} size={9} />
+                    ))}
+                  </div>
+                )}
+
+                {pair.contextual_meaning?.shared_themes?.length > 0 && (
+                  <div style={{ marginTop: 8 }}>
+                    <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.08em", marginBottom: 5 }}>SHARED THEMES</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
+                      {pair.contextual_meaning.shared_themes.slice(0, 8).map((theme) => (
+                        <Pill key={`theme-${theme}`} label={theme} fg={T.violet} bg={T.violetDim} size={9} />
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {pair.contextual_meaning?.matched_passages?.length > 0 && (
+                  <div style={{ marginTop: 9, display: "flex", flexDirection: "column", gap: 6 }}>
+                    <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.08em" }}>MATCHED CONTEXT SNIPPETS</div>
+                    {pair.contextual_meaning.matched_passages.slice(0, 2).map((m, idx) => (
+                      <div key={`match-${idx}`} style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "8px 9px" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 5 }}>
+                          <span style={{ fontSize: 10, color: T.faint }}>Aligned passage {idx + 1}</span>
+                          <span style={{ fontSize: 10, color: T.amber, fontFamily: "'DM Mono',monospace" }}>{Math.round((m.similarity || 0) * 100)}%</span>
+                        </div>
+                        <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.55 }}>A: {m.snippet_a}</div>
+                        <div style={{ fontSize: 11, color: T.muted, lineHeight: 1.55, marginTop: 4 }}>B: {m.snippet_b}</div>
+                      </div>
                     ))}
                   </div>
                 )}
@@ -1404,12 +1643,21 @@ function FileManagerPanel({ onManaged }) {
   const [loadingContent, setLoadingContent] = useState(false);
   const [saving, setSaving] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [renaming, setRenaming] = useState(false);
   const [newPath, setNewPath] = useState("");
   const [filter, setFilter] = useState("");
   const [showEditableOnly, setShowEditableOnly] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
   const [reindexing, setReindexing] = useState(false);
   const [expandedFolders, setExpandedFolders] = useState(() => new Set(["."]));
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editorWrap, setEditorWrap] = useState(true);
+  const [editorFontSize, setEditorFontSize] = useState(12);
+  const [copyFlash, setCopyFlash] = useState(false);
+  const [originalContent, setOriginalContent] = useState("");
+  const [findQuery, setFindQuery] = useState("");
+  const [findFlash, setFindFlash] = useState(false);
+  const editorRef = useRef(null);
 
   const selectedFile = files.find(f => f.path === selectedPath) || null;
 
@@ -1443,10 +1691,13 @@ function FileManagerPanel({ onManaged }) {
   const loadContent = useCallback(async (path, editable) => {
     if (!path) {
       setContent("");
+      setOriginalContent("");
       return;
     }
     if (!editable) {
-      setContent("This file type is not editable in-app. You can still delete it here.");
+      const roContent = "This file type is not editable in-app. You can still delete it here.";
+      setContent(roContent);
+      setOriginalContent(roContent);
       return;
     }
     setLoadingContent(true);
@@ -1455,9 +1706,12 @@ function FileManagerPanel({ onManaged }) {
       const res = await fetch(`${API_BASE}/files/content?path=${encodeURIComponent(path)}`);
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to load content.");
-      setContent(data.content || "");
+      const nextContent = data.content || "";
+      setContent(nextContent);
+      setOriginalContent(nextContent);
     } catch (e) {
       setContent("");
+      setOriginalContent("");
       setErrorMsg(e.message || "Failed to load file content.");
     } finally {
       setLoadingContent(false);
@@ -1470,8 +1724,18 @@ function FileManagerPanel({ onManaged }) {
       setContent("");
       return;
     }
+    if (!editorOpen) return;
     loadContent(file.path, file.editable);
-  }, [selectedPath, files, loadContent]);
+  }, [selectedPath, files, loadContent, editorOpen]);
+
+  useEffect(() => {
+    if (!editorOpen) return;
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") setEditorOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [editorOpen]);
 
   const createFile = async () => {
     let path = newPath.trim();
@@ -1505,6 +1769,39 @@ function FileManagerPanel({ onManaged }) {
     }
   };
 
+  const renameFile = async () => {
+    if (!selectedFile || renaming) return;
+    const currentPath = selectedFile.path;
+    const suggested = selectedFile.path;
+    let targetPath = window.prompt("Rename file to:", suggested);
+    if (targetPath == null) return;
+    targetPath = targetPath.trim().replace(/\\/g, "/").replace(/\/+$/, "");
+    if (!targetPath || targetPath === currentPath) return;
+
+    const base = targetPath.split("/").pop() || "";
+    if (base && !base.includes(".") && selectedFile.ext) {
+      targetPath = `${targetPath}.${selectedFile.ext}`;
+    }
+
+    setRenaming(true);
+    setErrorMsg("");
+    try {
+      const res = await fetch(`${API_BASE}/files/rename`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ old_path: currentPath, new_path: targetPath }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to rename file.");
+      await loadFiles(data.new_path || targetPath);
+      if (onManaged) onManaged();
+    } catch (e) {
+      setErrorMsg(e.message || "Failed to rename file.");
+    } finally {
+      setRenaming(false);
+    }
+  };
+
   const saveFile = async () => {
     if (!selectedFile || !selectedFile.editable || saving) return;
     setSaving(true);
@@ -1517,6 +1814,7 @@ function FileManagerPanel({ onManaged }) {
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to save file.");
+      setOriginalContent(content);
       await loadFiles(selectedFile.path);
       if (onManaged) onManaged();
     } catch (e) {
@@ -1611,6 +1909,11 @@ function FileManagerPanel({ onManaged }) {
     return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
   };
 
+  const countFilesDeep = (node) => {
+    const children = Object.values(node.folders);
+    return node.files.length + children.reduce((sum, child) => sum + countFilesDeep(child), 0);
+  };
+
   const folderCount = countFolders(tree);
   const editableCount = files.filter(f => f.editable).length;
 
@@ -1631,55 +1934,169 @@ function FileManagerPanel({ onManaged }) {
     setExpandedFolders(new Set(["."]));
   };
 
+  const allFolderPaths = collectFolderPaths(tree);
+  const isTreeExpanded = allFolderPaths.length > 0 && allFolderPaths.every(path => expandedFolders.has(path));
+
+  const toggleTreeExpanded = () => {
+    if (isTreeExpanded) collapseAllFolders();
+    else expandAllFolders();
+  };
+
+  const openEditor = (path = selectedPath) => {
+    if (!path) return;
+    setSelectedPath(path);
+    setEditorOpen(true);
+  };
+
+  const findNextInEditor = () => {
+    const editor = editorRef.current;
+    const query = findQuery.trim();
+    if (!editor || !query || !content) return;
+    const haystack = content.toLowerCase();
+    const needle = query.toLowerCase();
+    const startFrom = Math.max(editor.selectionEnd || 0, 0);
+    let idx = haystack.indexOf(needle, startFrom);
+    if (idx === -1) idx = haystack.indexOf(needle, 0);
+    if (idx === -1) {
+      setFindFlash(true);
+      setTimeout(() => setFindFlash(false), 900);
+      return;
+    }
+    editor.focus();
+    editor.setSelectionRange(idx, idx + query.length);
+  };
+
+  const insertTimestamp = () => {
+    const editor = editorRef.current;
+    if (!editor || !selectedFile?.editable) return;
+    const stamp = new Date().toISOString();
+    const start = editor.selectionStart || 0;
+    const end = editor.selectionEnd || start;
+    const next = `${content.slice(0, start)}${stamp}${content.slice(end)}`;
+    setContent(next);
+    requestAnimationFrame(() => {
+      editor.focus();
+      const pos = start + stamp.length;
+      editor.setSelectionRange(pos, pos);
+    });
+  };
+
+  const trimTrailingWhitespace = () => {
+    if (!selectedFile?.editable) return;
+    setContent(prev => prev.split("\n").map(line => line.replace(/[ \t]+$/g, "")).join("\n"));
+  };
+
+  useEffect(() => {
+    if (!editorOpen) return;
+    const handleEditorHotkeys = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") {
+        e.preventDefault();
+        saveFile();
+      }
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "f") {
+        e.preventDefault();
+        const input = document.getElementById("editor-find-input");
+        input?.focus();
+      }
+    };
+    window.addEventListener("keydown", handleEditorHotkeys);
+    return () => window.removeEventListener("keydown", handleEditorHotkeys);
+  }, [editorOpen, saveFile]);
+
+  const hasUnsavedChanges = !!selectedFile?.editable && content !== originalContent;
+
+  const copyEditorContent = async () => {
+    if (!content) return;
+    try {
+      await navigator.clipboard.writeText(content);
+      setCopyFlash(true);
+      setTimeout(() => setCopyFlash(false), 1200);
+    } catch {
+      setErrorMsg("Could not copy editor content.");
+    }
+  };
+
+  const reloadEditorContent = async () => {
+    if (!selectedFile) return;
+    await loadContent(selectedFile.path, selectedFile.editable);
+  };
+
+  const formatJsonContent = () => {
+    if (!selectedFile || selectedFile.ext !== "json") return;
+    try {
+      const parsed = JSON.parse(content || "{}");
+      setContent(JSON.stringify(parsed, null, 2));
+    } catch {
+      setErrorMsg("JSON format failed. Fix syntax and try again.");
+    }
+  };
+
+  const downloadCurrentFile = () => {
+    if (!selectedFile) return;
+    const blob = new Blob([content || ""], { type: "text/plain;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = selectedFile.name || "document.txt";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
   const renderFolder = (node, depth = 0) => {
     const isExpanded = expandedFolders.has(node.path);
     const folders = Object.values(node.folders).sort((a, b) => a.name.localeCompare(b.name));
-    const folderFileCount = node.files.length + folders.reduce((sum, child) => sum + child.files.length, 0);
-    const folderIndent = 8 + depth * 10;
+    const folderFileCount = countFilesDeep(node);
+    const folderIndent = 10 + depth * 14;
 
     return (
       <div key={node.path}>
         {node.path !== "." && (
           <button onClick={() => toggleFolder(node.path)}
-            style={{ width: "100%", marginBottom: 4, textAlign: "left", border: `1px solid ${isExpanded ? T.borderHi : T.border}`,
-              borderRadius: 10, background: isExpanded ? T.raised : T.panel, color: T.muted, padding: "8px 10px", cursor: "pointer",
+            style={{ width: "100%", marginBottom: 3, textAlign: "left", border: `1px solid ${isExpanded ? T.borderHi : T.border}`,
+              borderRadius: 10, background: isExpanded ? `linear-gradient(90deg, ${T.raised}, ${T.panel})` : "transparent", color: T.muted, padding: "7px 10px", cursor: "pointer",
               fontFamily: "inherit", display: "flex", alignItems: "center", gap: 8, paddingLeft: folderIndent,
-              transition: "all .15s" }}>
+              transition: "all .15s", backdropFilter: "blur(2px)" }}>
             <span style={{ fontSize: 10, color: isExpanded ? T.text : T.faint, width: 10 }}>{isExpanded ? "▾" : "▸"}</span>
-            <span style={{ fontSize: 12 }}>📁</span>
+            <span style={{ width: 16, height: 16, borderRadius: 5, background: `${T.teal}14`, color: T.teal,
+              display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 9,
+              fontFamily: "'DM Mono',monospace", flexShrink: 0 }}>DIR</span>
             <span style={{ fontSize: 11, color: T.text, fontWeight: 600, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{node.name}</span>
-            <span style={{ fontSize: 10, color: T.faint, fontFamily: "'DM Mono',monospace" }}>{folderFileCount}</span>
+            <span style={{ fontSize: 10, color: T.faint, fontFamily: "'DM Mono',monospace" }}>{folderFileCount}f</span>
           </button>
         )}
 
         {(node.path === "." || isExpanded) && (
-          <div style={node.path === "." ? undefined : { marginLeft: 10, paddingLeft: 9, borderLeft: `1px dashed ${T.border}` }}>
+          <div style={node.path === "." ? undefined : { marginLeft: 14, paddingLeft: 8, borderLeft: `1px dashed ${T.border}` }}>
             {folders.map(child => renderFolder(child, depth + (node.path === "." ? 0 : 1)))}
             {node.files
               .sort((a, b) => a.name.localeCompare(b.name))
               .map((f) => {
                 const ec = EXT_COLOR[f.ext] || EXT_COLOR.txt;
                 const active = selectedPath === f.path;
-                const fileIndent = 22 + depth * 10;
+                const fileIndent = 36 + depth * 14;
                 const glyph = FILE_GLYPH[f.ext] || "•";
                 return (
-                  <button key={f.path} onClick={() => setSelectedPath(f.path)}
-                    style={{ width: "100%", marginBottom: 4, textAlign: "left", border: `1px solid ${active ? T.borderHi : T.border}`,
-                      borderRadius: 10, background: active ? T.raised : "transparent", color: T.text,
-                      padding: "8px 10px", cursor: "pointer", fontFamily: "inherit", paddingLeft: fileIndent,
-                      transition: "all .15s" }}>
+                  <button key={f.path} onClick={() => openEditor(f.path)}
+                    style={{ width: "100%", marginBottom: 3, textAlign: "left", border: `1px solid ${active ? T.borderHi : "transparent"}`,
+                      borderRadius: 10, background: active ? `linear-gradient(90deg, ${T.raised}, ${T.panel})` : "transparent", color: T.text,
+                      padding: "7px 10px", cursor: "pointer", fontFamily: "inherit", paddingLeft: fileIndent,
+                      transition: "all .15s", boxShadow: active ? `inset 2px 0 0 ${T.blue}` : "none" }}>
                     <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
                       <span style={{ width: 18, height: 18, borderRadius: 6, background: ec.bg, color: ec.fg,
                         display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 10,
                         fontFamily: "'DM Mono',monospace", flexShrink: 0 }}>{glyph}</span>
-                      <Pill label={(f.ext || "txt").toUpperCase()} fg={ec.fg} bg={ec.bg} />
-                      <span style={{ fontSize: 12, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{f.name}</span>
-                      {!f.editable && <span style={{ fontSize: 9, color: T.faint }}>read-only</span>}
-                    </div>
-                    <div style={{ marginTop: 4, fontSize: 10, color: T.faint, display: "flex", alignItems: "center", gap: 8 }}>
-                      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{f.path}</span>
+                      <span style={{ fontSize: 11, color: T.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>{f.name}</span>
+                      <Pill label={(f.ext || "txt").toUpperCase()} fg={ec.fg} bg={ec.bg} size={9} />
+                      {!f.editable && <span style={{ fontSize: 9, color: T.faint, letterSpacing: "0.05em" }}>RO</span>}
                       <span style={{ fontFamily: "'DM Mono',monospace", flexShrink: 0 }}>{formatBytes(f.size)}</span>
                     </div>
+                    {filter.trim() && (
+                      <div style={{ marginTop: 3, fontSize: 10, color: T.faint, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        {f.path}
+                      </div>
+                    )}
                   </button>
                 );
               })}
@@ -1689,137 +2106,292 @@ function FileManagerPanel({ onManaged }) {
     );
   };
 
+  const selectedParts = selectedFile ? selectedFile.path.split("/").filter(Boolean) : [];
+
+  const Icon = ({ path, size = 12, stroke = "currentColor", strokeWidth = 2 }) => (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={stroke} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+      <path d={path} />
+    </svg>
+  );
+
+  const ICONS = {
+    add: "M12 5v14M5 12h14",
+    refresh: "M3 12a9 9 0 0 1 15.3-6.3L21 8M21 3v5h-5M21 12a9 9 0 0 1-15.3 6.3L3 16M3 21v-5h5",
+    tree: "M6 3v6M18 3v6M12 9v6M4 15h16M6 21h12",
+    reindex: "M13 2 3 14h7l-1 8 10-12h-7z",
+    editable: "M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z",
+    delete: "M3 6h18M8 6V4h8v2M10 11v6M14 11v6M6 6l1 14h10l1-14",
+    rename: "M4 7h11M4 12h8M4 17h6M15 17l5-5 2 2-5 5-3 1z",
+    save: "M5 3h11l3 3v15H5zM8 3v6h8M9 17h6",
+    close: "M6 6l12 12M18 6 6 18",
+    find: "M11 18a7 7 0 1 1 0-14 7 7 0 0 1 0 14zm10 3-5.2-5.2",
+    wrap: "M4 7h14M4 12h10a3 3 0 1 1 0 6h-2M12 18l-2-2 2-2",
+    copy: "M9 9h11v12H9zM4 4h11v12",
+    download: "M12 3v12M7 10l5 5 5-5M5 21h14",
+    time: "M12 6v6l4 2M21 12a9 9 0 1 1-18 0 9 9 0 0 1 18 0",
+    trim: "M4 7h16M4 12h12M4 17h8",
+    json: "M9 5c-2 2-2 12 0 14M15 5c2 2 2 12 0 14",
+  };
+
   return (
-    <div style={{ height: "100%", display: "grid", gridTemplateColumns: "380px 1fr", minHeight: 0 }}>
-      <aside style={{ borderRight: `1px solid ${T.border}`, display: "flex", flexDirection: "column", minHeight: 0, background: T.surface }}>
-        <div style={{ padding: "12px", borderBottom: `1px solid ${T.border}`, display: "flex", flexDirection: "column", gap: 8 }}>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 6 }}>
-            <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "7px 8px" }}>
-              <div style={{ fontSize: 9, color: T.faint, letterSpacing: "0.08em" }}>FILES</div>
-              <div style={{ fontSize: 13, color: T.text, fontWeight: 700, marginTop: 2, fontFamily: "'DM Mono',monospace" }}>{files.length}</div>
-            </div>
-            <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "7px 8px" }}>
-              <div style={{ fontSize: 9, color: T.faint, letterSpacing: "0.08em" }}>FOLDERS</div>
-              <div style={{ fontSize: 13, color: T.text, fontWeight: 700, marginTop: 2, fontFamily: "'DM Mono',monospace" }}>{folderCount}</div>
-            </div>
-            <div style={{ background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, padding: "7px 8px" }}>
-              <div style={{ fontSize: 9, color: T.faint, letterSpacing: "0.08em" }}>EDITABLE</div>
-              <div style={{ fontSize: 13, color: T.text, fontWeight: 700, marginTop: 2, fontFamily: "'DM Mono',monospace" }}>{editableCount}</div>
-            </div>
-          </div>
-
-          <input
-            value={newPath}
-            onChange={e => setNewPath(e.target.value)}
-            placeholder="New file path (e.g. notes/today.md)"
-            style={{ width: "100%", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, color: T.text, fontSize: 12, padding: "8px 10px", outline: "none" }}
-          />
-          <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={createFile}
-              style={{ flex: 1, border: "none", borderRadius: 8, background: creating ? T.faint : T.blue, color: "#fff", fontSize: 11, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: "inherit" }}>
-              {creating ? "Creating…" : "Create file"}
-            </button>
-            <button onClick={() => loadFiles(selectedPath)}
-              style={{ border: `1px solid ${T.border}`, borderRadius: 8, background: T.raised, color: T.muted, fontSize: 11, fontWeight: 600, padding: "7px 10px", cursor: "pointer", fontFamily: "inherit" }}>
-              Refresh
-            </button>
-            <button onClick={runReindex}
-              style={{ border: "none", borderRadius: 8, background: reindexing ? T.faint : T.amber, color: "#111",
-                fontSize: 11, fontWeight: 700, padding: "7px 10px", cursor: "pointer", fontFamily: "inherit" }}>
-              {reindexing ? "Reindexing…" : "Reindex"}
-            </button>
-          </div>
-
-          <div style={{ display: "flex", gap: 6 }}>
+    <div style={{ height: "100%", minHeight: 0, position: "relative", background: `radial-gradient(ellipse at 10% 10%, ${T.panel} 0%, ${T.bg} 52%)` }}>
+      <section style={{ height: "100%", display: "flex", flexDirection: "column", minHeight: 0, padding: 14 }}>
+        <div style={{ border: `1px solid ${T.border}`, borderRadius: 14, background: `linear-gradient(180deg, ${T.surface} 0%, ${T.bg} 100%)`,
+          boxShadow: "0 18px 34px rgba(0,0,0,.33)", minHeight: 0, flex: 1, display: "flex", flexDirection: "column" }}>
+          <div style={{ padding: "10px 12px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.08em" }}>HIERARCHY</div>
+            <div style={{ fontSize: 10, color: T.muted }}>{files.length} files · {folderCount} folders</div>
+            <div style={{ fontFamily: "'DM Mono',monospace", fontSize: 10, color: T.muted }}>{visibleFiles.length}/{files.length}</div>
+            <div style={{ flex: 1 }} />
             <input
               value={filter}
               onChange={e => setFilter(e.target.value)}
-              placeholder="Filter files…"
-              style={{ width: "100%", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, color: T.text, fontSize: 12, padding: "8px 10px", outline: "none" }}
+              placeholder="Filter files..."
+              style={{ width: 220, maxWidth: "35vw", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, color: T.text, fontSize: 11, padding: "6px 8px", outline: "none" }}
             />
+            <input
+              value={newPath}
+              onChange={e => setNewPath(e.target.value)}
+              placeholder="Create file path..."
+              style={{ width: 210, maxWidth: "35vw", background: T.panel, border: `1px solid ${T.border}`, borderRadius: 8, color: T.text, fontSize: 11, padding: "6px 8px", outline: "none" }}
+            />
+            <button onClick={createFile}
+              style={{ border: "none", borderRadius: 8, background: creating ? T.faint : T.blue,
+                color: "#fff", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", padding: "6px 9px", cursor: "pointer", fontFamily: "inherit",
+                display: "flex", alignItems: "center", gap: 5 }}>
+              <Icon path={ICONS.add} size={11} />
+              {creating ? "CREATING" : "CREATE"}
+            </button>
+            <button onClick={() => loadFiles(selectedPath)}
+              style={{ border: `1px solid ${T.border}`, borderRadius: 8, background: T.panel, color: T.muted,
+                fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", padding: "6px 9px", cursor: "pointer", fontFamily: "inherit",
+                display: "flex", alignItems: "center", gap: 5 }}>
+              <Icon path={ICONS.refresh} size={11} />
+              REFRESH
+            </button>
+            <button onClick={toggleTreeExpanded}
+              style={{ border: `1px solid ${isTreeExpanded ? T.teal : T.border}`, borderRadius: 8,
+                background: isTreeExpanded ? `${T.teal}18` : T.panel, color: isTreeExpanded ? T.teal : T.muted,
+                fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", padding: "6px 9px", cursor: "pointer", fontFamily: "inherit",
+                display: "flex", alignItems: "center", gap: 5 }}>
+              <Icon path={ICONS.tree} size={11} />
+              {isTreeExpanded ? "TREE: EXPANDED" : "TREE: COLLAPSED"}
+            </button>
+            <button onClick={runReindex}
+              style={{ border: "none", borderRadius: 8, background: reindexing ? T.faint : T.amber,
+                color: "#111", fontSize: 10, fontWeight: 800, letterSpacing: "0.04em", padding: "6px 9px", cursor: "pointer", fontFamily: "inherit",
+                display: "flex", alignItems: "center", gap: 5 }}>
+              <Icon path={ICONS.reindex} size={11} />
+              {reindexing ? "REINDEXING" : "REINDEX"}
+            </button>
             <button onClick={() => setShowEditableOnly(v => !v)}
               style={{ border: `1px solid ${showEditableOnly ? T.borderHi : T.border}`, borderRadius: 8,
                 background: showEditableOnly ? T.raised : T.panel, color: showEditableOnly ? T.text : T.muted,
-                fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", padding: "0 9px", cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}>
+                fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", padding: "6px 9px", cursor: "pointer", fontFamily: "inherit",
+                display: "flex", alignItems: "center", gap: 5 }}>
+              <Icon path={ICONS.editable} size={11} />
               EDITABLE
             </button>
+            {selectedFile && (
+              <>
+                <button onClick={renameFile} disabled={renaming}
+                  style={{ border: `1px solid ${T.border}`, borderRadius: 8, background: T.panel,
+                    color: renaming ? T.faint : T.muted, fontSize: 10, fontWeight: 700, letterSpacing: "0.04em",
+                    padding: "6px 9px", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                  <Icon path={ICONS.rename} size={11} />
+                  {renaming ? "RENAMING" : "RENAME"}
+                </button>
+                <button onClick={deleteFile}
+                  style={{ border: "none", borderRadius: 8, background: T.coral,
+                    color: "#fff", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em", padding: "6px 9px", cursor: "pointer", fontFamily: "inherit",
+                    display: "flex", alignItems: "center", gap: 5 }}>
+                  <Icon path={ICONS.delete} size={11} />
+                  DELETE
+                </button>
+              </>
+            )}
           </div>
 
-          <div style={{ display: "flex", gap: 6 }}>
-            <button onClick={expandAllFolders}
-              style={{ flex: 1, border: `1px solid ${T.border}`, borderRadius: 8, background: T.panel,
-                color: T.muted, fontSize: 10, fontWeight: 600, padding: "6px 10px", cursor: "pointer", fontFamily: "inherit" }}>
-              Expand all
-            </button>
-            <button onClick={collapseAllFolders}
-              style={{ flex: 1, border: `1px solid ${T.border}`, borderRadius: 8, background: T.panel,
-                color: T.muted, fontSize: 10, fontWeight: 600, padding: "6px 10px", cursor: "pointer", fontFamily: "inherit" }}>
-              Collapse all
-            </button>
+          <div style={{ padding: "8px 12px", borderBottom: `1px solid ${T.border}`, background: `${T.panel}99`, display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 10, color: T.faint, letterSpacing: "0.07em" }}>ROOT</span>
+            <span style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>test_documents</span>
+            <span style={{ fontSize: 10, color: T.faint }}>{folderCount} folders · {visibleFiles.length} files</span>
+            {selectedFile && <span style={{ fontSize: 10, color: T.muted, marginLeft: "auto", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>Selected: {selectedFile.path}</span>}
           </div>
-        </div>
 
-        <div style={{ padding: "10px 12px 6px", fontSize: 10, color: T.faint, letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <span>FILE TREE</span>
-          <span style={{ fontFamily: "'DM Mono',monospace" }}>{visibleFiles.length}/{files.length}</span>
-        </div>
-
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 8px 8px" }}>
-          {loadingFiles && <div style={{ padding: 10, fontSize: 12, color: T.muted }}>Loading files…</div>}
-          {!loadingFiles && visibleFiles.length === 0 && (
-            <Empty icon="📁" title="No files" sub="Upload or create files to manage them here." />
-          )}
-          {!loadingFiles && visibleFiles.length > 0 && (
-            <div style={{ marginBottom: 6, border: `1px solid ${T.border}`, borderRadius: 10, background: T.panel, padding: "8px 10px" }}>
-              <div style={{ fontSize: 10, color: T.faint, letterSpacing: "0.07em", marginBottom: 3 }}>ROOT</div>
-              <div style={{ fontSize: 12, color: T.text, fontWeight: 600 }}>test_documents</div>
-              <div style={{ marginTop: 3, fontSize: 10, color: T.faint }}>{folderCount} folders · {visibleFiles.length} files</div>
+          {errorMsg && (
+            <div style={{ margin: "8px 12px 0", padding: "8px 10px", borderRadius: 8,
+              background: T.coralDim, border: `1px solid ${T.coral}44`, color: T.coral, fontSize: 11 }}>
+              {errorMsg}
             </div>
           )}
-          {!loadingFiles && renderFolder(tree, 0)}
-        </div>
-      </aside>
 
-      <section style={{ display: "flex", flexDirection: "column", minHeight: 0, background: T.bg }}>
-        <div style={{ padding: "10px 12px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 8 }}>
-          <span style={{ fontSize: 10, color: T.faint, letterSpacing: "0.08em", flex: 1 }}>
-            {selectedFile ? selectedFile.path : "No file selected"}
-          </span>
-          <button onClick={saveFile} disabled={!selectedFile || !selectedFile.editable || saving}
-            style={{ border: "none", borderRadius: 8, background: (!selectedFile || !selectedFile.editable || saving) ? T.faint : T.green,
-              color: "#fff", fontSize: 11, fontWeight: 600, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit" }}>
-            {saving ? "Saving…" : "Save"}
-          </button>
-          <button onClick={deleteFile} disabled={!selectedFile}
-            style={{ border: "none", borderRadius: 8, background: selectedFile ? T.coral : T.faint,
-              color: "#fff", fontSize: 11, fontWeight: 600, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit" }}>
-            Delete
-          </button>
-        </div>
-
-        {errorMsg && (
-          <div style={{ margin: "10px 12px 0", padding: "8px 10px", borderRadius: 8,
-            background: T.coralDim, border: `1px solid ${T.coral}44`, color: T.coral, fontSize: 11 }}>
-            {errorMsg}
+          <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "8px" }}>
+            {loadingFiles && <div style={{ padding: 10, fontSize: 12, color: T.muted }}>Loading files…</div>}
+            {!loadingFiles && visibleFiles.length === 0 && (
+              <Empty icon="📁" title="No files" sub="Upload or create files to manage them here." />
+            )}
+            {!loadingFiles && renderFolder(tree, 0)}
           </div>
-        )}
-
-        <div style={{ flex: 1, minHeight: 0, padding: 12 }}>
-          {!selectedFile && <Empty icon="✎" title="Select a file" sub="Pick a file from the list to view or edit it." />}
-          {selectedFile && loadingContent && <div style={{ fontSize: 12, color: T.muted }}>Loading content…</div>}
-          {selectedFile && !loadingContent && (
-            <textarea
-              value={content}
-              onChange={e => setContent(e.target.value)}
-              readOnly={!selectedFile.editable}
-              style={{ width: "100%", height: "100%", resize: "none", borderRadius: 12,
-                border: `1px solid ${T.border}`, background: T.surface, color: selectedFile.editable ? T.text : T.muted,
-                fontSize: 12, lineHeight: 1.6, padding: "12px 14px", outline: "none",
-                fontFamily: "'DM Mono', monospace" }}
-            />
-          )}
         </div>
       </section>
+
+      {editorOpen && selectedFile && (
+        <div onClick={() => setEditorOpen(false)} style={{ position: "absolute", inset: 0, zIndex: 30,
+          background: "rgba(3, 5, 10, 0.72)", backdropFilter: "blur(7px)",
+          display: "flex", alignItems: "center", justifyContent: "center", padding: 18 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: "min(1060px, 96vw)", height: "min(760px, 92vh)",
+            borderRadius: 16, overflow: "hidden", display: "flex", flexDirection: "column",
+            border: `1px solid ${T.borderHi}`, background: `linear-gradient(180deg, ${T.surface}, ${T.bg})`,
+            boxShadow: "0 30px 90px rgba(0,0,0,.65), 0 0 0 1px rgba(79,128,255,.14)" }}>
+
+            <div style={{ padding: "11px 12px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 8 }}>
+              <div style={{ flex: 1, minWidth: 0, display: "flex", alignItems: "center", gap: 6, overflowX: "auto", paddingBottom: 2 }}>
+                {selectedParts.map((part, idx) => (
+                  <div key={`${part}-${idx}`} style={{ display: "flex", alignItems: "center", gap: 6, flexShrink: 0 }}>
+                    {idx > 0 && <span style={{ color: T.faint, fontSize: 10 }}>/</span>}
+                    <span style={{ fontSize: idx === selectedParts.length - 1 ? 11 : 10,
+                      color: idx === selectedParts.length - 1 ? T.text : T.muted,
+                      fontWeight: idx === selectedParts.length - 1 ? 600 : 500,
+                      fontFamily: idx === selectedParts.length - 1 ? "'DM Mono', monospace" : "inherit" }}>
+                      {part}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              {!selectedFile.editable && (
+                <span style={{ fontSize: 10, color: T.faint, border: `1px solid ${T.border}`,
+                  borderRadius: 7, padding: "4px 7px", letterSpacing: "0.04em" }}>READ ONLY</span>
+              )}
+              <button onClick={saveFile} disabled={!selectedFile.editable || saving}
+                style={{ border: "none", borderRadius: 8, background: (!selectedFile.editable || saving) ? T.faint : T.green,
+                  color: "#fff", fontSize: 11, fontWeight: 700, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit",
+                  display: "flex", alignItems: "center", gap: 6 }}>
+                <Icon path={ICONS.save} size={12} />
+                {saving ? "Saving..." : hasUnsavedChanges ? "Save Changes" : "Saved"}
+              </button>
+              <button onClick={renameFile} disabled={renaming}
+                style={{ border: `1px solid ${T.border}`, borderRadius: 8, background: T.panel,
+                  color: renaming ? T.faint : T.muted, fontSize: 11, fontWeight: 700, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit",
+                  display: "flex", alignItems: "center", gap: 6 }}>
+                <Icon path={ICONS.rename} size={12} />
+                {renaming ? "Renaming..." : "Rename"}
+              </button>
+              <button onClick={deleteFile}
+                style={{ border: "none", borderRadius: 8, background: T.coral,
+                  color: "#fff", fontSize: 11, fontWeight: 700, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit",
+                  display: "flex", alignItems: "center", gap: 6 }}>
+                <Icon path={ICONS.delete} size={12} />
+                Delete
+              </button>
+              <button onClick={() => setEditorOpen(false)}
+                style={{ border: `1px solid ${T.border}`, borderRadius: 8, background: T.panel,
+                  color: T.muted, fontSize: 11, fontWeight: 700, padding: "7px 12px", cursor: "pointer", fontFamily: "inherit",
+                  display: "flex", alignItems: "center", gap: 6 }}>
+                <Icon path={ICONS.close} size={12} />
+                Close
+              </button>
+            </div>
+
+            <div style={{ padding: "8px 12px", borderBottom: `1px solid ${T.border}`, display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+              <input
+                id="editor-find-input"
+                value={findQuery}
+                onChange={e => setFindQuery(e.target.value)}
+                onKeyDown={e => { if (e.key === "Enter") findNextInEditor(); }}
+                placeholder="Find in file..."
+                style={{ width: 170, background: T.panel, border: `1px solid ${findFlash ? T.coral : T.border}`,
+                  borderRadius: 7, color: T.text, fontSize: 10, padding: "5px 8px", outline: "none" }}
+              />
+              <button onClick={findNextInEditor}
+                style={{ border: `1px solid ${T.border}`, borderRadius: 7, background: T.panel, color: T.muted,
+                  fontSize: 10, fontWeight: 700, padding: "5px 8px", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                <Icon path={ICONS.find} size={11} />
+                FIND NEXT
+              </button>
+              <button onClick={() => setEditorWrap(v => !v)}
+                style={{ border: `1px solid ${editorWrap ? T.borderHi : T.border}`, borderRadius: 7,
+                  background: editorWrap ? T.raised : T.panel, color: editorWrap ? T.text : T.muted,
+                  fontSize: 10, fontWeight: 700, padding: "5px 8px", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                <Icon path={ICONS.wrap} size={11} />
+                {editorWrap ? "WRAP ON" : "WRAP OFF"}
+              </button>
+              <button onClick={() => setEditorFontSize(v => Math.max(11, v - 1))}
+                style={{ border: `1px solid ${T.border}`, borderRadius: 7, background: T.panel, color: T.muted,
+                  fontSize: 10, fontWeight: 700, padding: "5px 8px", cursor: "pointer", fontFamily: "inherit" }}>
+                A-
+              </button>
+              <button onClick={() => setEditorFontSize(v => Math.min(20, v + 1))}
+                style={{ border: `1px solid ${T.border}`, borderRadius: 7, background: T.panel, color: T.muted,
+                  fontSize: 10, fontWeight: 700, padding: "5px 8px", cursor: "pointer", fontFamily: "inherit" }}>
+                A+
+              </button>
+              <button onClick={copyEditorContent}
+                style={{ border: `1px solid ${copyFlash ? T.green : T.border}`, borderRadius: 7,
+                  background: copyFlash ? `${T.green}1f` : T.panel, color: copyFlash ? T.green : T.muted,
+                  fontSize: 10, fontWeight: 700, padding: "5px 8px", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                <Icon path={ICONS.copy} size={11} />
+                {copyFlash ? "COPIED" : "COPY"}
+              </button>
+              <button onClick={reloadEditorContent}
+                style={{ border: `1px solid ${T.border}`, borderRadius: 7, background: T.panel, color: T.muted,
+                  fontSize: 10, fontWeight: 700, padding: "5px 8px", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                <Icon path={ICONS.refresh} size={11} />
+                RELOAD
+              </button>
+              <button onClick={downloadCurrentFile}
+                style={{ border: `1px solid ${T.border}`, borderRadius: 7, background: T.panel, color: T.muted,
+                  fontSize: 10, fontWeight: 700, padding: "5px 8px", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                <Icon path={ICONS.download} size={11} />
+                DOWNLOAD
+              </button>
+              <button onClick={insertTimestamp}
+                style={{ border: `1px solid ${T.border}`, borderRadius: 7, background: T.panel, color: T.muted,
+                  fontSize: 10, fontWeight: 700, padding: "5px 8px", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                <Icon path={ICONS.time} size={11} />
+                INSERT TIME
+              </button>
+              <button onClick={trimTrailingWhitespace}
+                style={{ border: `1px solid ${T.border}`, borderRadius: 7, background: T.panel, color: T.muted,
+                  fontSize: 10, fontWeight: 700, padding: "5px 8px", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                <Icon path={ICONS.trim} size={11} />
+                TRIM SPACES
+              </button>
+              {selectedFile.ext === "json" && (
+                <button onClick={formatJsonContent}
+                  style={{ border: `1px solid ${T.teal}55`, borderRadius: 7, background: `${T.teal}1b`, color: T.teal,
+                    fontSize: 10, fontWeight: 700, padding: "5px 8px", cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 5 }}>
+                  <Icon path={ICONS.json} size={11} />
+                  FORMAT JSON
+                </button>
+              )}
+              <span style={{ fontSize: 10, color: hasUnsavedChanges ? T.amber : T.faint, fontFamily: "'DM Mono', monospace" }}>
+                {hasUnsavedChanges ? "Unsaved changes" : "All changes saved"}
+              </span>
+              <span style={{ marginLeft: "auto", fontSize: 10, color: T.faint, fontFamily: "'DM Mono', monospace" }}>
+                {editorFontSize}px
+              </span>
+            </div>
+
+            <div style={{ flex: 1, minHeight: 0, padding: 12 }}>
+              {loadingContent && <div style={{ fontSize: 12, color: T.muted }}>Loading content…</div>}
+              {!loadingContent && (
+                <textarea
+                  ref={editorRef}
+                  value={content}
+                  onChange={e => setContent(e.target.value)}
+                  readOnly={!selectedFile.editable}
+                  style={{ width: "100%", height: "100%", resize: "none", borderRadius: 12,
+                    border: `1px solid ${T.border}`, background: T.surface, color: selectedFile.editable ? T.text : T.muted,
+                    fontSize: editorFontSize, lineHeight: 1.6, padding: "12px 14px", outline: "none",
+                    whiteSpace: editorWrap ? "pre-wrap" : "pre",
+                    fontFamily: "'DM Mono', monospace" }}
+                />
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1839,8 +2411,8 @@ function TypingIndicator() {
           <path d="M12 2v3M12 19v3M2 12h3M19 12h3" stroke={T.teal} strokeWidth="2" strokeLinecap="round"/>
         </svg>
       </div>
-      <div style={{ padding:"12px 16px", borderRadius:"18px 18px 18px 4px",
-        background:T.raised, border:`1px solid ${T.border}`,
+      <div style={{ padding:"12px 16px", borderRadius:"16px 16px 16px 4px",
+        background:`linear-gradient(160deg, ${T.raised} 0%, ${T.panel} 100%)`, border:`1px solid ${T.border}`,
         display:"flex", alignItems:"center", gap:2 }}>
         <span className="typing-dot"/>
         <span className="typing-dot"/>
@@ -1850,9 +2422,15 @@ function TypingIndicator() {
   );
 }
 
+function formatMsgTime(value) {
+  if (!value) return "Now";
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return "Now";
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
 function ChatMessage({ msg }) {
   const isUser = msg.role === "user";
-  const ext = msg.sources?.[0]?.file ? (EXT_COLOR[msg.sources[0].file.split(".").pop()?.toLowerCase()] || EXT_COLOR.txt) : null;
 
   return (
     <div className="msg-in" style={{ display:"flex", alignItems:"flex-end", gap:8, marginBottom:16,
@@ -1878,12 +2456,22 @@ function ChatMessage({ msg }) {
       <div style={{ maxWidth:"76%", display:"flex", flexDirection:"column",
         alignItems:isUser?"flex-end":"flex-start", gap:5 }}>
 
+        <div style={{ display:"flex", alignItems:"center", gap:6, padding:"0 3px",
+          fontSize:10, color:T.faint, letterSpacing:"0.03em" }}>
+          <span style={{ fontWeight:600, color:isUser?T.blue:T.teal }}>{isUser ? "You" : "Assistant"}</span>
+          <span style={{ opacity:.65 }}>•</span>
+          <span>{formatMsgTime(msg.createdAt)}</span>
+        </div>
+
         <div style={{ padding:"11px 15px",
-          borderRadius:isUser?"18px 18px 4px 18px":"18px 18px 18px 4px",
-          background:isUser?T.blue:T.raised,
+          borderRadius:isUser?"16px 16px 4px 16px":"16px 16px 16px 4px",
+          background:isUser
+            ? `linear-gradient(145deg, ${T.blue} 0%, #5a9bff 100%)`
+            : `linear-gradient(160deg, ${T.raised} 0%, ${T.panel} 100%)`,
           border:isUser?"none":`1px solid ${T.border}`,
           color:isUser?"#fff":T.text, fontSize:13, lineHeight:1.7,
-          boxShadow:isUser?`0 2px 12px ${T.blueDim}`:"none" }}>
+          whiteSpace:"pre-wrap",
+          boxShadow:isUser?`0 6px 18px ${T.blueDim}`:"none" }}>
           {msg.streaming
             ? <span>{msg.content}<span className="cursor"/></span>
             : msg.content || <span style={{ color:T.faint,fontStyle:"italic" }}>…</span>
@@ -1965,9 +2553,13 @@ function ChatPopup({ targetFile, onClose, onClearTarget }) {
       content: targetFile
         ? `Hi! I'm ready to answer questions about **${targetFile.file}**.\n\nI'll also check any related or version-linked files automatically. What would you like to know?`
         : `Hi! Ask me anything across your entire knowledge base.\n\nI'll find the most relevant documents and synthesise a precise answer for you.`,
-      sources:[], confidence:null, streaming:false,
+      sources:[], confidence:null, streaming:false, createdAt:Date.now(),
     }]);
     setTimeout(()=>inputRef.current?.focus(), 100);
+  }, [targetFile?.id]);
+
+  useEffect(() => {
+    setScope(targetFile ? "file" : "all");
   }, [targetFile?.id]);
 
   useEffect(()=>{
@@ -1994,8 +2586,8 @@ function ChatPopup({ targetFile, onClose, onClearTarget }) {
     setAsking(true);
 
     setMessages(prev=>[...prev,
-      { role:"user",   content:q,  streaming:false },
-      { role:"assistant", content:"", sources:[], confidence:null, streaming:true },
+      { role:"user", content:q, streaming:false, createdAt:Date.now() },
+      { role:"assistant", content:"", sources:[], confidence:null, streaming:true, createdAt:Date.now() },
     ]);
 
     try {
@@ -2035,18 +2627,29 @@ function ChatPopup({ targetFile, onClose, onClearTarget }) {
     "Summarise my project specs",
     "What changed between file versions?",
   ];
+  const scopeOptions = targetFile
+    ? [["file", "This file"], ["all", "All files"]]
+    : [["all", "All files"]];
 
   return (
     <div className={`chat-popup${closing?" closing":""}`}>
 
       {/* ── Header ── */}
-      <div style={{ background:T.surface, borderBottom:`1px solid ${T.border}`,
-        padding:"14px 16px", flexShrink:0 }}>
+      <div style={{
+        background:`linear-gradient(180deg, ${T.surface} 0%, ${T.panel} 100%)`,
+        borderBottom:`1px solid ${T.border}`,
+        padding:"14px 16px 12px",
+        flexShrink:0,
+        position:"relative",
+        zIndex:1,
+      }}>
 
         {/* Top row: avatar + title + close */}
-        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom: targetFile ? 10 : 0 }}>
-          <div style={{ width:36, height:36, borderRadius:"50%",
+        <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom: 10 }}>
+          <div style={{ width:38, height:38, borderRadius:12,
             background:`linear-gradient(135deg,${T.blue},${T.teal})`,
+            border:`1px solid rgba(255,255,255,.18)`,
+            boxShadow:`0 6px 16px ${T.blueDim}`,
             display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none">
               <circle cx="12" cy="12" r="3" fill="#fff"/>
@@ -2054,12 +2657,13 @@ function ChatPopup({ targetFile, onClose, onClearTarget }) {
             </svg>
           </div>
           <div style={{ flex:1 }}>
-            <div style={{ fontSize:14, fontWeight:700, color:T.text, letterSpacing:"-0.01em" }}>SemanticGraph AI</div>
+            <div style={{ fontSize:14, fontWeight:700, color:T.text, letterSpacing:"-0.01em" }}>SemanticGraph QA</div>
             <div style={{ display:"flex", alignItems:"center", gap:5, marginTop:1 }}>
               <Dot color={T.green} size={5} pulse/>
               <span style={{ fontSize:11, color:T.muted }}>
                 {asking ? "Thinking…" : "Online · phi3:mini"}
               </span>
+              <span style={{ fontSize:9, color:T.faint, letterSpacing:"0.07em", marginLeft:4 }}>LOCAL</span>
             </div>
           </div>
           <button onClick={handleClose}
@@ -2075,10 +2679,9 @@ function ChatPopup({ targetFile, onClose, onClearTarget }) {
           </button>
         </div>
 
-        {/* Context chip + scope toggle (when file-scoped) */}
-        {targetFile && (
-          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
-            {/* File chip */}
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8 }}>
+          {/* Context chip */}
+          {targetFile ? (
             <div style={{ display:"flex", alignItems:"center", gap:6, padding:"5px 10px",
               background:T.raised, borderRadius:10, border:`1px solid ${T.borderMd}`,
               minWidth:0, flex:1 }}>
@@ -2097,11 +2700,21 @@ function ChatPopup({ targetFile, onClose, onClearTarget }) {
                 </svg>
               </button>
             </div>
+          ) : (
+            <div style={{ display:"flex", alignItems:"center", gap:6, padding:"5px 10px",
+              background:T.raised, borderRadius:10, border:`1px solid ${T.borderMd}`,
+              minWidth:0, flex:1 }}>
+              <Dot color={T.teal} size={6}/>
+              <span style={{ fontSize:11, color:T.text, fontWeight:500, whiteSpace:"nowrap" }}>
+                Global search context
+              </span>
+            </div>
+          )}
 
-            {/* Scope pill toggle */}
-            <div style={{ display:"flex", gap:2, background:T.panel, borderRadius:8,
-              border:`1px solid ${T.border}`, padding:3, flexShrink:0 }}>
-              {[["file","This file"],["all","All files"]].map(([v,l])=>(
+          {/* Scope pill toggle */}
+          <div style={{ display:"flex", gap:2, background:T.panel, borderRadius:8,
+            border:`1px solid ${T.border}`, padding:3, flexShrink:0 }}>
+            {scopeOptions.map(([v,l])=>(
                 <button key={v} onClick={()=>setScope(v)}
                   style={{ fontSize:10, fontWeight:600, padding:"3px 8px", borderRadius:5,
                     border:"none", cursor:"pointer", fontFamily:"inherit", transition:"all .15s",
@@ -2109,23 +2722,24 @@ function ChatPopup({ targetFile, onClose, onClearTarget }) {
                     color:scope===v?"#fff":T.muted }}>
                   {l}
                 </button>
-              ))}
-            </div>
+            ))}
           </div>
-        )}
+        </div>
       </div>
 
       {/* ── Messages ── */}
       <div ref={scrollRef} style={{ flex:1, overflowY:"auto", padding:"16px 14px",
-        display:"flex", flexDirection:"column" }}>
+        display:"flex", flexDirection:"column",
+        background:`linear-gradient(180deg, rgba(255,255,255,.01) 0%, rgba(255,255,255,0) 100%)` }}>
 
         {messages.map((m,i)=><ChatMessage key={i} msg={m}/>)}
         {asking && !messages[messages.length-1]?.streaming && <TypingIndicator/>}
 
         {/* Suggestions — only before first user message */}
         {!hasUserMsg && (
-          <div className="fu1" style={{ marginTop:4 }}>
-            <div style={{ fontSize:10, color:T.faint, letterSpacing:"0.07em", marginBottom:8, textAlign:"center" }}>
+          <div className="fu1" style={{ marginTop:4, padding:"10px", borderRadius:14,
+            border:`1px solid ${T.border}`, background:`linear-gradient(180deg, ${T.panel} 0%, ${T.raised} 100%)` }}>
+            <div style={{ fontSize:10, color:T.faint, letterSpacing:"0.07em", marginBottom:8, textAlign:"center", fontWeight:600 }}>
               TRY ASKING
             </div>
             <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
@@ -2149,10 +2763,11 @@ function ChatPopup({ targetFile, onClose, onClearTarget }) {
 
       {/* ── Input ── */}
       <div style={{ padding:"10px 12px 12px", borderTop:`1px solid ${T.border}`,
-        background:T.surface, flexShrink:0 }}>
+        background:`linear-gradient(180deg, ${T.panel} 0%, ${T.surface} 100%)`, flexShrink:0 }}>
         <div style={{ display:"flex", gap:8, alignItems:"flex-end",
           background:T.raised, borderRadius:14, padding:"8px 8px 8px 14px",
           border:`1px solid ${T.borderMd}`,
+          boxShadow:`inset 0 1px 0 rgba(255,255,255,.03)`,
           transition:"border-color .2s" }}
           onFocusCapture={e=>e.currentTarget.style.borderColor=T.blue}
           onBlurCapture={e=>e.currentTarget.style.borderColor=T.borderMd}>
@@ -2184,8 +2799,13 @@ function ChatPopup({ targetFile, onClose, onClearTarget }) {
                 </svg>}
           </button>
         </div>
-        <div style={{ fontSize:10,color:T.faint,marginTop:6,textAlign:"center" }}>
-          Answers sourced locally via phi3:mini · never sent to the cloud
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", gap:8, marginTop:6 }}>
+          <div style={{ fontSize:10,color:T.faint }}>
+            Shift+Enter for newline
+          </div>
+          <div style={{ fontSize:10,color:T.faint,textAlign:"right" }}>
+            Local answers via phi3:mini
+          </div>
         </div>
       </div>
     </div>
@@ -2196,8 +2816,13 @@ function ChatPopup({ targetFile, onClose, onClearTarget }) {
 function ChatFAB({ open, hasTarget, onClick }) {
   return (
     <button className={`chat-fab${hasTarget&&!open?" has-file":""}`} onClick={onClick}
-      style={{ background:open?T.raised:`linear-gradient(135deg,${T.blue},#6b8fff)`,
-        boxShadow:open?`0 2px 16px rgba(0,0,0,.4)`:`0 4px 20px ${T.blue}66` }}>
+      style={{
+        background:open
+          ? `linear-gradient(145deg, ${T.raised} 0%, ${T.panel} 100%)`
+          : `linear-gradient(135deg, ${T.blue} 0%, #6b8fff 45%, ${T.teal} 100%)`,
+        border:`1px solid ${open ? T.borderMd : "rgba(255,255,255,.2)"}`,
+        boxShadow:open?`0 2px 16px rgba(0,0,0,.4)`:`0 8px 24px ${T.blue}55`,
+      }}>
       {open
         ? <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke={T.muted} strokeWidth="2.5" strokeLinecap="round">
             <path d="M18 6 6 18M6 6l12 12"/>
@@ -2215,6 +2840,164 @@ function ChatFAB({ open, hasTarget, onClick }) {
   );
 }
 
+function VirtualPresetPopup({
+  open,
+  loading,
+  presetName,
+  setPresetName,
+  topic,
+  setTopic,
+  person,
+  setPerson,
+  relation,
+  setRelation,
+  presets,
+  onBuild,
+  onSave,
+  onApplyPreset,
+  onDeletePreset,
+  virtualFolders,
+  onOpenFolder,
+  onClose,
+}) {
+  if (!open) return null;
+
+  const relationOptions = [
+    "ALL",
+    "VERSION_OF",
+    "CO_LOCATED",
+    "RELATED_TO",
+    "SHARES_ENTITY",
+    "SAME_TOPIC",
+    "FOLDER_SIMILAR",
+  ];
+
+  return (
+    <>
+      <div onClick={onClose} style={{ position:"fixed", inset:0, background:"rgba(0,0,0,.4)", zIndex:998 }} />
+      <div className="fu" style={{
+        position:"fixed",
+        top:72,
+        right:20,
+        width:360,
+        maxWidth:"calc(100vw - 24px)",
+        zIndex:999,
+        borderRadius:14,
+        background:`linear-gradient(180deg, ${T.surface} 0%, ${T.bg} 100%)`,
+        border:`1px solid ${T.borderMd}`,
+        boxShadow:"0 18px 48px rgba(0,0,0,.55)",
+        padding:12,
+        display:"flex",
+        flexDirection:"column",
+        gap:10,
+      }}>
+        <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between" }}>
+          <div>
+            <div style={{ fontSize:12, fontWeight:700, color:T.text }}>Virtual Folder Presets</div>
+            <div style={{ fontSize:10, color:T.faint }}>Build once, save, reuse with one click.</div>
+          </div>
+          <button onClick={onClose} style={{
+            width:22, height:22, borderRadius:6, cursor:"pointer", border:`1px solid ${T.border}`,
+            background:T.panel, color:T.muted, fontFamily:"inherit"
+          }}>x</button>
+        </div>
+
+        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8 }}>
+          <input value={topic} onChange={e=>setTopic(e.target.value)} placeholder="Topic 1" style={{
+            height:30, background:T.panel, border:`1px solid ${T.border}`, borderRadius:8,
+            color:T.text, padding:"0 9px", fontSize:11, outline:"none"
+          }} />
+          <input value={person} onChange={e=>setPerson(e.target.value)} placeholder="Topic 2" style={{
+            height:30, background:T.panel, border:`1px solid ${T.border}`, borderRadius:8,
+            color:T.text, padding:"0 9px", fontSize:11, outline:"none"
+          }} />
+          <select value={relation} onChange={e=>setRelation(e.target.value)} style={{
+            height:30, background:T.panel, border:`1px solid ${T.border}`, borderRadius:8,
+            color:T.text, padding:"0 9px", fontSize:11, outline:"none"
+          }}>
+            {relationOptions.map(opt => (
+              <option key={opt} value={opt}>{opt === "ALL" ? "Any relation" : opt.replace(/_/g, " ")}</option>
+            ))}
+          </select>
+          <button onClick={onBuild} style={{
+            height:30, borderRadius:8, border:`1px solid ${T.blue}66`, background:T.blueDim,
+            color:T.blue, fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit"
+          }}>
+            {loading ? "Building..." : "Build Virtual Folders"}
+          </button>
+        </div>
+
+        <div style={{ display:"flex", gap:8 }}>
+          <input value={presetName} onChange={e=>setPresetName(e.target.value)} placeholder="Preset name" style={{
+            flex:1, height:30, background:T.panel, border:`1px solid ${T.border}`, borderRadius:8,
+            color:T.text, padding:"0 9px", fontSize:11, outline:"none"
+          }} />
+          <button onClick={onSave} style={{
+            width:88, height:30, borderRadius:8, border:`1px solid ${T.teal}66`, background:T.tealDim,
+            color:T.teal, fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit"
+          }}>
+            Save
+          </button>
+        </div>
+
+        <div style={{ borderTop:`1px solid ${T.border}`, paddingTop:10, maxHeight:220, overflowY:"auto" }}>
+          <div style={{ fontSize:10, color:T.faint, letterSpacing:"0.06em", marginBottom:8 }}>SAVED PRESETS</div>
+          {presets.length === 0 && (
+            <div style={{ fontSize:11, color:T.muted }}>No presets yet.</div>
+          )}
+          {presets.map((p)=> (
+            <div key={p.id} style={{
+              display:"grid", gridTemplateColumns:"1fr auto auto", gap:6, alignItems:"center",
+              background:T.raised, border:`1px solid ${T.border}`, borderRadius:8, padding:"6px 8px", marginBottom:6
+            }}>
+              <div>
+                <div style={{ fontSize:11, color:T.text, fontWeight:600 }}>{p.name}</div>
+                <div style={{ fontSize:9, color:T.faint, fontFamily:"'DM Mono',monospace" }}>
+                  {(p.topic || "-")} · {(p.person || "-")} · {(p.relation || "ALL")}
+                </div>
+              </div>
+              <button onClick={()=>onApplyPreset(p)} style={{
+                height:24, padding:"0 8px", borderRadius:7, border:`1px solid ${T.blue}55`,
+                background:T.blueDim, color:T.blue, fontSize:10, cursor:"pointer", fontFamily:"inherit"
+              }}>Apply</button>
+              <button onClick={()=>onDeletePreset(p.id)} style={{
+                height:24, width:24, borderRadius:7, border:`1px solid ${T.coral}55`,
+                background:T.coralDim, color:T.coral, fontSize:11, cursor:"pointer", fontFamily:"inherit"
+              }}>x</button>
+            </div>
+          ))}
+        </div>
+
+        <div style={{ borderTop:`1px solid ${T.border}`, paddingTop:10, maxHeight:180, overflowY:"auto" }}>
+          <div style={{ fontSize:10, color:T.faint, letterSpacing:"0.06em", marginBottom:8 }}>GENERATED VIRTUAL FOLDERS</div>
+          {loading && <div style={{ fontSize:11, color:T.muted }}>Building virtual folders...</div>}
+          {!loading && (!virtualFolders || virtualFolders.length === 0) && (
+            <div style={{ fontSize:11, color:T.muted }}>Build with filters to generate folders here.</div>
+          )}
+          {!loading && (virtualFolders || []).map(folder => (
+            <div key={folder.id} style={{
+              display:"grid", gridTemplateColumns:"1fr auto", gap:6, alignItems:"center",
+              background:T.raised, border:`1px solid ${T.border}`, borderRadius:8,
+              padding:"6px 8px", marginBottom:6
+            }}>
+              <div>
+                <div style={{ fontSize:11, color:T.text, fontWeight:600 }}>{folder.title}</div>
+                <div style={{ fontSize:9, color:T.faint, fontFamily:"'DM Mono',monospace" }}>
+                  {folder.file_count} files · {folder.source}
+                </div>
+              </div>
+              <button onClick={()=>onOpenFolder && onOpenFolder(folder)} style={{
+                height:24, padding:"0 8px", borderRadius:7, border:`1px solid ${T.teal}55`,
+                background:T.tealDim, color:T.teal, fontSize:10, cursor:"pointer", fontFamily:"inherit"
+              }}>Search</button>
+            </div>
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
 /* ─── App ─────────────────────────────────────────────────────────────────── */
 export default function App() {
   const [query,     setQuery]     = useState("");
@@ -2226,25 +3009,150 @@ export default function App() {
   const [graphData, setGraphData] = useState(null);
   const [stats,     setStats]     = useState(null);
   const [conn,      setConn]      = useState("connecting");
+  const [resultsCollapsed, setResultsCollapsed] = useState(false);
+  const [scoreCollapsed, setScoreCollapsed] = useState(false);
 
   // Chat state
   const [chatOpen,   setChatOpen]   = useState(false);
   const [chatTarget, setChatTarget] = useState(null); // null = global
 
+  // File viewer state
+  const [fileViewerOpen,    setFileViewerOpen]    = useState(false);
+  const [fileViewerContent, setFileViewerContent] = useState("");
+  const [fileViewerFile,    setFileViewerFile]    = useState(null);
+  const [fileViewerLoading, setFileViewerLoading] = useState(false);
+  const [virtualFolders, setVirtualFolders] = useState([]);
+  const [virtualLoading, setVirtualLoading] = useState(false);
+  const [presetPopupOpen, setPresetPopupOpen] = useState(false);
+  const [presetName, setPresetName] = useState("");
+  const [presetTopic, setPresetTopic] = useState("");
+  const [presetPerson, setPresetPerson] = useState("");
+  const [presetRelation, setPresetRelation] = useState("ALL");
+  const [savedPresets, setSavedPresets] = useState([]);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem("semantic_virtual_folder_presets_v1");
+      const parsed = raw ? JSON.parse(raw) : [];
+      setSavedPresets(Array.isArray(parsed) ? parsed : []);
+    } catch {
+      setSavedPresets([]);
+    }
+  }, []);
+
   const fetchGraph = useCallback(async()=>{ try{const r=await fetch(`${API_BASE}/graph`);setGraphData(await r.json());}catch{} },[]);
   const fetchStats = useCallback(async()=>{ try{const r=await fetch(`${API_BASE}/status`);setStats(await r.json());setConn("ok");}catch{setConn("error");} },[]);
-  useEffect(()=>{ fetchGraph(); fetchStats(); },[]);
+  const fetchVirtualFolders = useCallback(async(filters={})=>{
+    setVirtualLoading(true);
+    try {
+      const params = new URLSearchParams();
+      if (filters.topic) params.set("topic", filters.topic);
+      if (filters.person) params.set("person", filters.person);
+      if (filters.relation) params.set("relation", filters.relation);
+      const queryString = params.toString();
+      const r = await fetch(`${API_BASE}/virtual-folders${queryString ? `?${queryString}` : ""}`);
+      const d = await r.json();
+      setVirtualFolders(Array.isArray(d.folders) ? d.folders : []);
+    } catch {
+      setVirtualFolders([]);
+    } finally {
+      setVirtualLoading(false);
+    }
+  },[]);
 
-  const handleSearch = async()=>{
-    if(!query.trim())return;
+  const applyVirtualFilters = useCallback(async(filters = {}) => {
+    const normalized = {
+      topic: (filters.topic || "").trim(),
+      person: (filters.person || "").trim(),
+      relation: (filters.relation || "").trim(),
+    };
+    await fetchVirtualFolders(normalized);
+    setTab("graph");
+  }, [fetchVirtualFolders]);
+
+  const saveCurrentPreset = useCallback(() => {
+    const name = presetName.trim();
+    if (!name) return;
+    const next = [
+      {
+        id: `${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
+        name,
+        topic: presetTopic.trim(),
+        person: presetPerson.trim(),
+        relation: presetRelation,
+      },
+      ...savedPresets,
+    ].slice(0, 20);
+    setSavedPresets(next);
+    setPresetName("");
+    try {
+      window.localStorage.setItem("semantic_virtual_folder_presets_v1", JSON.stringify(next));
+    } catch {}
+  }, [presetName, presetTopic, presetPerson, presetRelation, savedPresets]);
+
+  const deletePreset = useCallback((presetId) => {
+    const next = savedPresets.filter(p => p.id !== presetId);
+    setSavedPresets(next);
+    try {
+      window.localStorage.setItem("semantic_virtual_folder_presets_v1", JSON.stringify(next));
+    } catch {}
+  }, [savedPresets]);
+
+  const applySavedPreset = useCallback(async(preset) => {
+    setPresetTopic(preset.topic || "");
+    setPresetPerson(preset.person || "");
+    setPresetRelation(preset.relation || "ALL");
+    await applyVirtualFilters({
+      topic: preset.topic || "",
+      person: preset.person || "",
+      relation: preset.relation && preset.relation !== "ALL" ? preset.relation : "",
+    });
+    setPresetPopupOpen(false);
+  }, [applyVirtualFilters]);
+  useEffect(()=>{ fetchGraph(); fetchStats(); fetchVirtualFolders(); },[]);
+
+  const runSearch = useCallback(async(searchValue)=>{
+    const text = String(searchValue || "").trim();
+    if(!text) return;
+    setQuery(text);
+    setResultsCollapsed(false);
+    setScoreCollapsed(false);
     setLoading(true);setSearched(false);setSelected(null);setResults([]);
-    try{const r=await fetch(`${API_BASE}/search?q=${encodeURIComponent(query.trim())}`);
-      const d=await r.json();setResults(d.results||[]);setSelected(d.results?.[0]??null);setSearched(true);
-    }catch{setSearched(true);}finally{setLoading(false);}
-  };
+    try{
+      const r=await fetch(`${API_BASE}/search?q=${encodeURIComponent(text)}`);
+      const d=await r.json();
+      setResults(d.results||[]);
+      setSelected(d.results?.[0]??null);
+      setSearched(true);
+    }catch{
+      setSearched(true);
+    }finally{
+      setLoading(false);
+    }
+  },[]);
+
+  const handleSearch = async()=>{ await runSearch(query); };
 
   // "Ask about this file" from a result card → open chat scoped to that file
   const handleAsk = result => { setChatTarget(result); setChatOpen(true); };
+  
+  // "View File" from a result card → open file viewer with full content
+  const handleView = async(result) => {
+    setFileViewerFile(result);
+    setFileViewerLoading(true);
+    try {
+      const r = await fetch(`${API_BASE}/files/content?path=${encodeURIComponent(result.fullPath)}`);
+      if (!r.ok) throw new Error("Failed to fetch file content");
+      const data = await r.json();
+      setFileViewerContent(data.content);
+      setFileViewerOpen(true);
+    } catch (err) {
+      setFileViewerContent(`Error loading file: ${err.message}`);
+      setFileViewerOpen(true);
+    } finally {
+      setFileViewerLoading(false);
+    }
+  };
   // FAB toggle
   const toggleChat = () => setChatOpen(o=>!o);
 
@@ -2287,65 +3195,125 @@ export default function App() {
             padding:"7px 13px",background:T.panel,borderRadius:10,border:`1px solid ${T.border}` }}>
             <Dot color={connColor} size={7} pulse={conn==="connecting"}/>
             <span style={{ fontSize:11,color:T.muted,fontFamily:"'DM Mono',monospace" }}>{connLabel}</span>
+            <button
+              onClick={() => setPresetPopupOpen(v => !v)}
+              style={{
+                height:24,
+                padding:"0 8px",
+                borderRadius:7,
+                border:`1px solid ${T.blue}66`,
+                background:T.blueDim,
+                color:T.blue,
+                fontSize:10,
+                fontWeight:700,
+                cursor:"pointer",
+                fontFamily:"inherit",
+              }}
+              title="Build and save virtual folder presets"
+            >
+              Virtual Folders
+            </button>
           </div>
         </header>
 
         {/* ── 3-column body (unchanged) ── */}
-        <div style={{ flex:1,display:"grid",gridTemplateColumns:"310px 1fr 268px",minHeight:0,overflow:"hidden" }}>
+        <div style={{
+          flex:1,
+          display:"grid",
+          gridTemplateColumns:`${resultsCollapsed ? "52px" : "310px"} 1fr ${scoreCollapsed ? "52px" : "268px"}`,
+          minHeight:0,
+          overflow:"hidden",
+          transition:"grid-template-columns .2s ease"
+        }}>
 
           {/* Col 1 — Results */}
           <aside style={{ borderRight:`1px solid ${T.border}`,display:"flex",flexDirection:"column",overflow:"hidden",background:T.surface }}>
-            <div style={{ padding:"13px 15px 9px",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"space-between" }}>
-              <span style={{ fontSize:10,color:T.faint,letterSpacing:"0.08em",fontWeight:600 }}>RESULTS</span>
-              {searched&&<span className="fu" style={{ fontSize:11,color:T.teal,background:T.tealDim,padding:"2px 8px",borderRadius:10,fontFamily:"'DM Mono',monospace" }}>{results.length} found</span>}
+            <div style={{ padding:"13px 15px 9px",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"space-between",gap:8 }}>
+              {resultsCollapsed ? (
+                <span style={{ fontSize:10,color:T.faint,letterSpacing:"0.08em",fontWeight:600,writingMode:"vertical-rl",transform:"rotate(180deg)",margin:"0 auto" }}>RESULTS</span>
+              ) : (
+                <>
+                  <span style={{ fontSize:10,color:T.faint,letterSpacing:"0.08em",fontWeight:600 }}>RESULTS</span>
+                  {searched&&<span className="fu" style={{ fontSize:11,color:T.teal,background:T.tealDim,padding:"2px 8px",borderRadius:10,fontFamily:"'DM Mono',monospace" }}>{results.length} found</span>}
+                </>
+              )}
+              <button
+                onClick={() => setResultsCollapsed(v => !v)}
+                style={{
+                  width:24,
+                  height:24,
+                  borderRadius:7,
+                  border:`1px solid ${T.border}`,
+                  background:T.panel,
+                  color:T.muted,
+                  cursor:"pointer",
+                  display:"flex",
+                  alignItems:"center",
+                  justifyContent:"center",
+                  flexShrink:0,
+                  transition:"all .15s"
+                }}
+                onMouseEnter={e=>{e.currentTarget.style.color=T.text;e.currentTarget.style.borderColor=T.borderMd;}}
+                onMouseLeave={e=>{e.currentTarget.style.color=T.muted;e.currentTarget.style.borderColor=T.border;}}
+                title={resultsCollapsed ? "Expand results panel" : "Collapse results panel"}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <path d={resultsCollapsed ? "m9 18 6-6-6-6" : "m15 18-6-6 6-6"}/>
+                </svg>
+              </button>
             </div>
-            <Sep/>
+            {!resultsCollapsed && (
+              <>
+                <Sep/>
 
-            {/* ── Ask AI about these results — appears after any successful search ── */}
-            {searched && results.length > 0 && (
-              <div className="fu" style={{ margin:"8px 10px 2px",flexShrink:0 }}>
-                <button
-                  onClick={()=>{ setChatTarget(null); setChatOpen(true); }}
-                  style={{
-                    width:"100%", display:"flex", alignItems:"center", gap:9,
-                    padding:"9px 13px", borderRadius:10, cursor:"pointer", fontFamily:"inherit",
-                    background:chatOpen&&!chatTarget ? T.blue : `linear-gradient(135deg,${T.blueDim},${T.tealDim})`,
-                    border:`1px solid ${chatOpen&&!chatTarget ? T.blue : `${T.blue}38`}`,
-                    color:chatOpen&&!chatTarget ? "#fff" : T.blue,
-                    transition:"all .18s",
-                  }}
-                  onMouseEnter={e=>{ if(!(chatOpen&&!chatTarget)){ e.currentTarget.style.background=`linear-gradient(135deg,${T.blue}28,${T.teal}18)`; e.currentTarget.style.borderColor=`${T.blue}66`; } }}
-                  onMouseLeave={e=>{ if(!(chatOpen&&!chatTarget)){ e.currentTarget.style.background=`linear-gradient(135deg,${T.blueDim},${T.tealDim})`; e.currentTarget.style.borderColor=`${T.blue}38`; } }}
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
-                    stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" style={{ flexShrink:0 }}>
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
-                  </svg>
-                  <div style={{ flex:1, textAlign:"left" }}>
-                    <div style={{ fontSize:12, fontWeight:600, lineHeight:1.2 }}>Ask AI about these results</div>
-                    <div style={{ fontSize:10, opacity:.7, marginTop:1, fontFamily:"'DM Mono',monospace" }}>
-                      {results.length} file{results.length!==1?"s":""} · "{query.length>28?query.slice(0,26)+"…":query}"
-                    </div>
+                {/* ── Ask AI about these results — appears after any successful search ── */}
+                {searched && results.length > 0 && (
+                  <div className="fu" style={{ margin:"8px 10px 2px",flexShrink:0 }}>
+                    <button
+                      onClick={()=>{ setChatTarget(null); setChatOpen(true); }}
+                      style={{
+                        width:"100%", display:"flex", alignItems:"center", gap:9,
+                        padding:"9px 13px", borderRadius:10, cursor:"pointer", fontFamily:"inherit",
+                        background:chatOpen&&!chatTarget ? T.blue : `linear-gradient(135deg,${T.blueDim},${T.tealDim})`,
+                        border:`1px solid ${chatOpen&&!chatTarget ? T.blue : `${T.blue}38`}`,
+                        color:chatOpen&&!chatTarget ? "#fff" : T.blue,
+                        transition:"all .18s",
+                      }}
+                      onMouseEnter={e=>{ if(!(chatOpen&&!chatTarget)){ e.currentTarget.style.background=`linear-gradient(135deg,${T.blue}28,${T.teal}18)`; e.currentTarget.style.borderColor=`${T.blue}66`; } }}
+                      onMouseLeave={e=>{ if(!(chatOpen&&!chatTarget)){ e.currentTarget.style.background=`linear-gradient(135deg,${T.blueDim},${T.tealDim})`; e.currentTarget.style.borderColor=`${T.blue}38`; } }}
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" style={{ flexShrink:0 }}>
+                        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>
+                      </svg>
+                      <div style={{ flex:1, textAlign:"left" }}>
+                        <div style={{ fontSize:12, fontWeight:600, lineHeight:1.2 }}>Ask AI about these results</div>
+                        <div style={{ fontSize:10, opacity:.7, marginTop:1, fontFamily:"'DM Mono',monospace" }}>
+                          {results.length} file{results.length!==1?"s":""} · "{query.length>28?query.slice(0,26)+"…":query}"
+                        </div>
+                      </div>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
+                        stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink:0, opacity:.6 }}>
+                        <path d="m9 18 6-6-6-6"/>
+                      </svg>
+                    </button>
                   </div>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none"
-                    stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" style={{ flexShrink:0, opacity:.6 }}>
-                    <path d="m9 18 6-6-6-6"/>
-                  </svg>
-                </button>
-              </div>
-            )}
+                )}
 
-            <div style={{ flex:1,overflowY:"auto",padding:"8px 8px" }}>
-              {loading&&[0,1,2,3].map(i=><SkeletonCard key={i} delay={i*0.07}/>)}
-              {!loading&&!searched&&<Empty icon="⌕" title="Search your documents" sub='Try "latest resume" or "invoices from cloudflare"'/>}
-              {!loading&&searched&&results.length===0&&<Empty icon="∅" title="No results found" sub="Try different keywords or check that your documents are indexed"/>}
-              {!loading&&searched&&results.map((r,i)=>(
-                <ResultCard key={r.id} result={r} index={i}
-                  selected={selected?.id===r.id}
-                  onClick={()=>{ setSelected(r); setChatTarget(r); setChatOpen(true); }}
-                  onAsk={handleAsk}/>
-              ))}
-            </div>
+                <div style={{ flex:1,overflowY:"auto",padding:"8px 8px" }}>
+                  {loading&&[0,1,2,3].map(i=><SkeletonCard key={i} delay={i*0.07}/>)}
+                  {!loading&&!searched&&<Empty icon="⌕" title="Search your documents" sub='Try "latest resume" or "invoices from cloudflare"'/>}
+                  {!loading&&searched&&results.length===0&&<Empty icon="∅" title="No results found" sub="Try different keywords or check that your documents are indexed"/>}
+                  {!loading&&searched&&results.map((r,i)=>(
+                    <ResultCard key={r.id} result={r} index={i}
+                      selected={selected?.id===r.id}
+                      onClick={()=>{ setSelected(r); setChatTarget(r); setChatOpen(true); }}
+                      onAsk={handleAsk}
+                      onView={handleView}/>
+                  ))}
+                </div>
+              </>
+            )}
           </aside>
 
           {/* Col 2 — Graph / Ingest */}
@@ -2363,22 +3331,57 @@ export default function App() {
             </div>
             <div style={{ flex:1,overflow:"hidden" }}>
               {tab==="graph"
-                ?<GraphPanel graphData={graphData} highlightId={highlightId}/>
+                ?<GraphPanel
+                    graphData={graphData}
+                    highlightId={highlightId}
+                  />
                 :tab==="similarity"
                   ?<SimilarityPanel/>
                 :tab==="ingest"
-                  ?<IngestPanel onIngestComplete={()=>{fetchGraph();fetchStats();}} stats={stats}/>
-                  :<FileManagerPanel onManaged={()=>{fetchGraph();fetchStats();}}/>}
+                  ?<IngestPanel onIngestComplete={()=>{fetchGraph();fetchStats();fetchVirtualFolders();}} stats={stats}/>
+                  :<FileManagerPanel onManaged={()=>{fetchGraph();fetchStats();fetchVirtualFolders();}}/>}
             </div>
           </main>
 
           {/* Col 3 — Detail */}
           <aside style={{ borderLeft:`1px solid ${T.border}`,display:"flex",flexDirection:"column",overflow:"hidden",background:T.surface }}>
-            <div style={{ padding:"13px 17px 9px",flexShrink:0 }}>
-              <span style={{ fontSize:10,color:T.faint,letterSpacing:"0.08em",fontWeight:600 }}>SCORE BREAKDOWN</span>
+            <div style={{ padding: scoreCollapsed ? "10px 8px" : "13px 17px 9px",flexShrink:0,display:"flex",alignItems:"center",justifyContent:"space-between",gap:8 }}>
+              {scoreCollapsed ? (
+                <span style={{ fontSize:10,color:T.faint,letterSpacing:"0.08em",fontWeight:600,writingMode:"vertical-rl",transform:"rotate(180deg)",margin:"0 auto" }}>SCORE</span>
+              ) : (
+                <span style={{ fontSize:10,color:T.faint,letterSpacing:"0.08em",fontWeight:600 }}>SCORE BREAKDOWN</span>
+              )}
+              <button
+                onClick={() => setScoreCollapsed(v => !v)}
+                style={{
+                  width:24,
+                  height:24,
+                  borderRadius:7,
+                  border:`1px solid ${T.border}`,
+                  background:T.panel,
+                  color:T.muted,
+                  cursor:"pointer",
+                  display:"flex",
+                  alignItems:"center",
+                  justifyContent:"center",
+                  flexShrink:0,
+                  transition:"all .15s"
+                }}
+                onMouseEnter={e=>{e.currentTarget.style.color=T.text;e.currentTarget.style.borderColor=T.borderMd;}}
+                onMouseLeave={e=>{e.currentTarget.style.color=T.muted;e.currentTarget.style.borderColor=T.border;}}
+                title={scoreCollapsed ? "Expand score panel" : "Collapse score panel"}
+              >
+                <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                  <path d={scoreCollapsed ? "m15 18-6-6 6-6" : "m9 18 6-6-6-6"}/>
+                </svg>
+              </button>
             </div>
-            <Sep/>
-            <div style={{ flex:1,overflowY:"auto" }}><DetailPanel result={selected}/></div>
+            {!scoreCollapsed && (
+              <>
+                <Sep/>
+                <div style={{ flex:1,overflowY:"auto" }}><DetailPanel result={selected}/></div>
+              </>
+            )}
           </aside>
         </div>
 
@@ -2407,8 +3410,42 @@ export default function App() {
         />
       )}
 
+      {/* ── File Viewer Modal ── */}
+      <FileViewer
+        open={fileViewerOpen}
+        file={fileViewerFile}
+        content={fileViewerContent}
+        loading={fileViewerLoading}
+        onClose={()=>setFileViewerOpen(false)}
+      />
+
       {/* ── FAB ── */}
       <ChatFAB open={chatOpen} hasTarget={!!chatTarget} onClick={toggleChat}/>
+
+      <VirtualPresetPopup
+        open={presetPopupOpen}
+        loading={virtualLoading}
+        presetName={presetName}
+        setPresetName={setPresetName}
+        topic={presetTopic}
+        setTopic={setPresetTopic}
+        person={presetPerson}
+        setPerson={setPresetPerson}
+        relation={presetRelation}
+        setRelation={setPresetRelation}
+        presets={savedPresets}
+        virtualFolders={virtualFolders}
+        onBuild={() => applyVirtualFilters({
+          topic: presetTopic,
+          person: presetPerson,
+          relation: presetRelation !== "ALL" ? presetRelation : "",
+        })}
+        onSave={saveCurrentPreset}
+        onApplyPreset={applySavedPreset}
+        onDeletePreset={deletePreset}
+        onOpenFolder={(folder) => { runSearch(folder?.query_hint || folder?.title || ""); setPresetPopupOpen(false); }}
+        onClose={() => setPresetPopupOpen(false)}
+      />
     </>
   );
 }

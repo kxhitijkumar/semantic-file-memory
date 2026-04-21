@@ -9,6 +9,9 @@ A **local-first semantic memory system** for personal documents that enables int
 - **Grounded QA**: Answers questions using only retrieved context via local Ollama (`phi3:mini`)
 - **Interactive Dashboard**: React-based UI with graph visualization, search results, file management, and AI chat
 - **Semantic Enrichment**: Extracts entities, profiles folder semantics, and identifies topic clusters for richer context
+- **Dynamic Virtual Folders**: Group files by topic, entity, or graph relationship without moving files on disk
+- **Document Similarity**: Compare semantic similarity across multiple files with detailed explanations
+- **Optional Acceleration**: FAISS for fast similarity search, CrossEncoder for higher accuracy, LLM intent parsing for better understanding
 
 All processing happens locally. No data leaves your machine.
 
@@ -40,12 +43,13 @@ SematicMemoryGraph is a personal document intelligence system that transforms a 
 
 ---
 
-## 2) Core architecture
+## 2) Core architecture and advanced features
 
-### Backend engine (`backend.py`)
+### Backend Engine (`backend.py`)
 
 The backend is the heart of the system and handles all semantic processing:
 
+**Core Functionality:**
 - **File Extraction**: Supports `.txt`, `.md`, `.pdf`, `.docx`, `.py`, `.json`. Each file type has its own parsing logic to extract clean text while preserving structure cues.
 
 - **Chunking with Overlap**: Documents are split into fixed-size chunks (default 300 tokens) with 50-token overlap. Overlap ensures semantic context isn't lost at chunk boundaries—key information near the end of chunk 1 is repeated in chunk 2.
@@ -53,16 +57,6 @@ The backend is the heart of the system and handles all semantic processing:
 - **Vector Embeddings**: Uses `BAAI/bge-small-en` (SentenceTransformer) by default to convert text into dense vectors. Embeddings capture semantic meaning, allowing "What is the invoice total?" to match documents about billing even without exact keyword overlap. The model runs locally; inference is CPU-friendly.
 
 - **Lexical Scoring (BM25)**: Implements Okapi BM25, a probabilistic ranking function that scores documents based on keyword frequency and rarity. Combined with embeddings, BM25 catches keyword-heavy queries that pure semantic matching might miss.
-
-- **Optional Acceleration**: 
-  - FAISS (CPU-backed) indexes embeddings for fast nearest-neighbor search at scale
-  - CrossEncoder optional reranking: re-scores top-K results using a pair-wise model for even higher precision
-
-- **Semantic Enrichment** (local changes):
-  - **Entity Extraction**: Identifies named entities (people, places, organizations) using spaCy. Entities become graph nodes and boost ranking when entities overlap between query and search results.
-  - **Folder Semantic Profiles**: Computes a semantic embedding for each folder based on file contents. Enables "folder similarity" reasoning—grouping thematically related folders even if they share no direct overlap.
-  - **Context-Enriched Vectors**: Embeds chunks with surrounding folder/topic context, making embeddings more stable and meaningful.
-  - **Topic Clustering**: Groups semantically similar chunks into implicit topics. Used to build `SAME_TOPIC` relationships in the graph.
 
 - **Knowledge Graph Construction**: Builds directed/undirected relationships linking:
   - Files to versions (`VERSION_OF`)
@@ -75,17 +69,58 @@ The backend is the heart of the system and handles all semantic processing:
 
 - **Caching**: All embeddings, graph edges, entity extractions, and metadata are cached in `.semantic_cache/` as pickled objects. On subsequent runs, if files haven't changed (checked via mtime), the cache is reused. This makes repeated queries near-instant and avoids re-embedding unchanged files.
 
-### API layer (`api.py`)
+**Advanced Features (v4.1+ Semantic Enrichment):**
 
-Exposes the backend as REST endpoints (FastAPI):
+- **Entity Extraction**: Identifies named entities (people, places, organizations) using spaCy NLP. Entities become graph nodes and boost ranking when entities overlap between query and search results.
+  - Automatically creates `SHARES_ENTITY` edges between documents mentioning the same people or organizations
+  - **Example**: Query "What did John Smith do?" now finds all documents mentioning John across different files and contexts
+  - **Benefit**: High-precision relationship signal—"both docs mention John Smith and Acme Corp" is strong evidence of relatedness
 
-- **Search endpoint**: Takes a query, routes it to backend retrieval, formats results for frontend display (including score breakdowns)
-- **Graph endpoint**: Returns JSON representation of the knowledge graph (nodes, edges, coordinates for visualization)
-- **File management**: CRUD operations on corpus files with automatic re-indexing
-- **QA endpoint**: Accepts questions, retrieves context, calls Ollama for grounded answers
-- **Debug endpoints**: Exposes graph structure, folder tree, and indexing stats for troubleshooting
+- **Folder Semantic Profiles**: Aggregates vector embeddings of all files in a folder to create a single folder-level semantic profile
+  - Enables `FOLDER_SIMILAR` edges connecting thematically related folder structures
+  - **Example**: `/archive/Q1_reports/` automatically connects to `/archive/Q2_reports/` despite no direct file overlap
+  - **Benefit**: Discover related folder structures and organize documents hierarchically
 
-CORS is configured to allow localhost frontend requests. Responses are JSON-compatible with frontend expectations.
+- **Context-Enriched Embeddings**: Chunk embeddings are augmented with surrounding folder and document context during encoding
+  - Results in more stable, meaningful embeddings that better reflect document topic
+  - **Benefit**: Semantic search is more robust to out-of-context chunks and noise
+
+- **Topic Clustering**: Runs unsupervised clustering on document embeddings to identify implicit topics
+  - Creates `SAME_TOPIC` relationships for grouped documents
+  - **Example**: All documents discussing "invoicing" get clustered together regardless of where they're stored
+  - **Benefit**: Coarser-grained relationships for faster exploration while remaining interpretable
+
+- **Adaptive Relation Thresholding**: `RELATED_TO` threshold adjusts dynamically based on corpus statistics
+  - Small corpus → lower threshold (connect more), Large corpus → higher threshold (precise matches)
+  - **Benefit**: No manual tuning needed; graph density stays appropriate regardless of corpus size
+
+### API Layer (`api.py`)
+
+Exposes the backend as REST endpoints (FastAPI) with **11 major endpoint categories**:
+
+**Search & Retrieval**
+- `/search`: Hybrid search with score breakdowns (BM25, semantic, graph)
+- `/qa`: LLM-grounded question answering with scope (file vs. corpus)
+
+**Graph & Relationships**
+- `/graph`: Full knowledge graph JSON (nodes, edges, layout, metadata)
+- `/debug/graph`: Folder tree structure, graph statistics, relation distribution
+
+**File Management**
+- `/files`: List indexed files with metadata
+- `/files/content`: Read/write file content (editable formats only)
+- `/ingest`: Upload and auto-index new files
+
+**Advanced Analysis** (New in v4.1+)
+- `/virtual-folders`: Dynamic grouping by topic, entity, or graph relationship
+- `/similarity`: Pairwise document comparison with semantic similarity scores
+
+**Control & Status**
+- `/reindex`: Force full re-index of corpus
+- `/status`: Indexing statistics and configuration
+- `/health`: Liveness check for monitoring
+
+CORS is configured to allow localhost frontend requests. All responses are JSON-compatible with frontend expectations.
 
 ### Frontend (`frontend/src/App.jsx`)
 
@@ -103,7 +138,7 @@ React-based interactive UI built with Vite:
   - Confidence and fallback notices
   - Grounded responses (only answers based on retrieved context, not model hallucigation)
 
-### Optional Streamlit app (`app.py`)
+### Optional Streamlit App (`app.py`)
 
 Provides a lightweight alternative UI for quick backend interaction and testing. Useful for development and simple use cases without requiring the full React build.
 
@@ -319,6 +354,42 @@ Base URL (dev): `http://localhost:8000`
   - Supports all indexed file types
   - Useful for adding documents via UI file drop zone
 
+### Dynamic Grouping and Similarity
+
+- **`GET /virtual-folders?topic=<topic>&person=<person>&relation=<relation>`**
+  - Builds dynamic virtual folders from graph structure and semantic filters
+  - Supports three types of virtual grouping:
+    - **Topic-based**: Groups files by semantic topic (e.g., `?topic=invoicing`)
+    - **Entity-based**: Groups files mentioning a person/organization (e.g., `?person=John`)
+    - **Relation-based**: Groups connected components by graph relationship type (e.g., `?relation=SHARES_ENTITY`)
+  - Returns non-persistent logical groups (files not moved on disk, only logically grouped)
+  - Query parameters:
+    - `topic` (optional): Semantic topic filter (e.g., "finance", "invoicing")
+    - `person` (optional): Entity/person name filter (e.g., "John Smith", "Acme Corp")
+    - `relation` (optional): Graph relation type filter (e.g., "SHARES_ENTITY", "RELATED_TO")
+    - `min_files` (optional, default=2): Minimum files required per virtual folder
+  - Useful for exploratory analysis without modifying disk structure
+  - Example: `GET /virtual-folders?topic=invoicing&min_files=3` returns all folders containing ≥3 invoicing-related files
+
+- **`POST /similarity`**
+  - Compares semantic similarity across 2+ files
+  - Request body:
+    ```json
+    {
+      "paths": [
+        "resumes/MyResume_Final.txt",
+        "resumes/MyResume.txt",
+        "cover_letter.md"
+      ]
+    }
+    ```
+  - Returns:
+    - Pairwise similarity scores (0-1, higher = more similar)
+    - Explanation of similarity drivers (shared entities, topics, keywords)
+    - Similarity matrix for multi-file comparison
+  - Useful for finding closely related documents, detecting duplicate content, or measuring document evolution
+  - Example: Compare two resume versions to understand what changed
+
 ### Indexing Control
 
 - **`POST /reindex`**
@@ -496,10 +567,37 @@ Configure these via shell exports or `.env` file before starting the API.
   - `0` to use BM25 + semantic similarity only (faster, usually sufficient)
   - Only use if retrieval accuracy is critical and latency acceptable
   - Requires: `pip install sentence-transformers[torch]` and CUDA for speedup
+  - **What it does**: Re-scores top-K results using a pair-wise neural model, catching nuances missed by the hybrid ranking
 
 - **`SEMANTIC_ENABLE_LLM_INTENT`** (default: `1`)
   - `1` to enable LLM-based query intent detection (current date, entity types)
   - `0` to disable (slight speedup, less ranking nuance)
+  - **What it does**: Parses query intent (is user asking about a specific person? a date range? a technical concept?) to boost relevant documents
+
+### Optional Performance Features
+
+These are pre-integrated but require specific packages to activate:
+
+**FAISS Acceleration** (Fast vector similarity search)
+- Install: `pip install faiss-cpu` (CPU) or `faiss-gpu` (GPU)
+- **What it does**: Replaces O(n) brute-force embedding similarity with O(log n) nearest-neighbor search
+- **When to use**: Corpus > 1000 documents or frequent repeated searches
+- **Performance impact**: First-run indexing is slower (build index), but queries 10-100x faster
+- **Setup**: None required—if FAISS is installed, system auto-enables it
+
+**CrossEncoder Reranking** (Neural pair-wise ranking)
+- Install: `pip install sentence-transformers sentence-transformers[torch]` and CUDA (optional)
+- **What it does**: Re-scores retrieved results using a deep learning model that understands document-query relationships
+- **When to use**: When retrieval accuracy is more important than speed
+- **Performance impact**: Adds 100-500ms to query latency, but significantly improves top-1 accuracy
+- **Setup**: Enable via `SEMANTIC_ENABLE_RERANK=1`
+
+**LLM Intent Parsing** (Query understanding)
+- Uses `phi3:mini` via Ollama (same as QA)
+- **What it does**: Parses query structure to identify entities, dates, intent (search vs. summarize vs. compare)
+- **When to use**: Complex, multi-part queries; user asking about specific people, dates, or concepts
+- **Performance impact**: ~50-200ms overhead per query (calls Ollama)
+- **Setup**: Default enabled; disable via `SEMANTIC_ENABLE_LLM_INTENT=0` if Ollama not available
 
 ### Example `.env` file
 ```bash

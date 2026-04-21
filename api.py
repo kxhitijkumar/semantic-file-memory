@@ -17,9 +17,11 @@ import os
 import re
 import shutil
 import tempfile
+from collections import defaultdict
 from datetime import datetime
 from typing import Optional
 import ollama
+import networkx as nx
 from fastapi import FastAPI, File, HTTPException, Query, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -136,6 +138,71 @@ def _infer_graph_positions(nodes: list[dict]) -> list[dict]:
     return nodes
 
 
+def _doc_matches_virtual_filters(doc: dict, topic: str = "", person: str = "") -> bool:
+    """Return True when the document matches the requested semantic filters."""
+    topic_q = (topic or "").strip().lower()
+    person_q = (person or "").strip().lower()
+
+    preview = (doc.get("preview") or "").lower()
+    filename = (doc.get("filename") or "").lower()
+    doc_type = (doc.get("metadata", {}).get("type") or "").lower()
+    entities = doc.get("entities") or {}
+
+    if topic_q:
+        keyword_hits = any(topic_q in kw.lower() for kw in entities.get("keywords", []))
+        topic_hits = (
+            topic_q in preview
+            or topic_q in filename
+            or topic_q in doc_type
+            or keyword_hits
+        )
+        if not topic_hits:
+            return False
+
+    if person_q:
+        names = entities.get("names", [])
+        person_hits = any(person_q in str(name).lower() for name in names)
+        if not person_hits:
+            # Fallback for files that do not have extracted entities yet.
+            person_hits = person_q in preview or person_q in filename
+        if not person_hits:
+            return False
+
+    return True
+
+
+def _build_virtual_folder_payload(doc_ids: set[str], title: str, source: str, query_hint: str, description: str, relation: str | None = None) -> dict:
+    files = []
+    for doc_id in sorted(doc_ids, key=lambda did: (memory.documents.get(did, {}).get("filename", ""), did)):
+        doc = memory.documents.get(doc_id, {})
+        abs_path = doc.get("path", "")
+        rel_path = os.path.relpath(abs_path, ROOT_DIR).replace("\\", "/") if abs_path else ""
+        files.append(
+            {
+                "id": doc_id,
+                "filename": doc.get("filename", "unknown"),
+                "path": rel_path,
+                "doc_type": doc.get("metadata", {}).get("type", "general"),
+                "ext": _ext(doc.get("filename", "")),
+                "mod_time": doc.get("mod_time", ""),
+            }
+        )
+
+    folder_id = hashlib.md5(f"{title}|{source}|{query_hint}".encode("utf-8")).hexdigest()[:12]
+    payload = {
+        "id": f"vf_{folder_id}",
+        "title": title,
+        "source": source,
+        "description": description,
+        "query_hint": query_hint,
+        "file_count": len(files),
+        "files": files,
+    }
+    if relation:
+        payload["relation"] = relation
+    return payload
+
+
 def _format_result(doc_id: str, score: float, breakdown: dict, doc: dict, chunk_index: int = 0, total_chunks: int = 1) -> dict:
     """
     Convert a backend result dict into the shape the React frontend expects.
@@ -147,12 +214,21 @@ def _format_result(doc_id: str, score: float, breakdown: dict, doc: dict, chunk_
       final,
       tags,
       chunk,
-      date
+      date,
+      fullPath  <-- Added for file viewer
     }
     """
     filename = doc.get("filename", "unknown")
     raw_path = doc.get("path", doc.get("folder", ""))
     display_path = _short_path(os.path.dirname(raw_path)) + "/"
+
+    # Compute relative path from ROOT_DIR for API calls (like /files/content?path=...)
+    try:
+        root_abs = os.path.abspath(ROOT_DIR)
+        raw_abs = os.path.abspath(raw_path)
+        rel_file_path = os.path.relpath(raw_abs, root_abs)
+    except (ValueError, TypeError):
+        rel_file_path = raw_path
 
     # Pull per-component scores from breakdown (already computed in hybrid_search)
     bm25_raw = breakdown.get("bm25", 0.0)
@@ -193,6 +269,7 @@ def _format_result(doc_id: str, score: float, breakdown: dict, doc: dict, chunk_
         "tags": tags,
         "chunk": f"chunk 1/{total_chunks}",
         "date": date_str,
+        "fullPath": rel_file_path,
     }
 
 
@@ -479,6 +556,158 @@ def graph():
     return {"nodes": node_list, "edges": edges}
 
 
+@app.get("/virtual-folders")
+def virtual_folders(
+    topic: str = Query("", description="Optional semantic topic filter (e.g. finance)."),
+    person: str = Query("", description="Optional person/entity filter (e.g. John)."),
+    relation: str = Query("", description="Optional graph relation filter (e.g. SHARES_ENTITY)."),
+    min_files: int = Query(2, ge=1, le=25, description="Minimum files required per virtual folder."),
+):
+    """
+    Build dynamic virtual folders from graph structure + semantic filters.
+    This endpoint never moves files on disk; it only returns logical groups.
+    """
+    if not memory.documents:
+        return {
+            "filters": {"topic": topic, "person": person, "relation": relation, "min_files": min_files},
+            "folders": [],
+            "count": 0,
+        }
+
+    topic_q = (topic or "").strip()
+    person_q = (person or "").strip()
+    relation_q = (relation or "").strip().upper()
+
+    matching_doc_ids = {
+        doc_id
+        for doc_id, doc in memory.documents.items()
+        if _doc_matches_virtual_filters(doc, topic=topic_q, person=person_q)
+    }
+
+    folders: list[dict] = []
+
+    if topic_q and len(matching_doc_ids) >= min_files:
+        folders.append(
+            _build_virtual_folder_payload(
+                doc_ids=matching_doc_ids,
+                title=f"Documents about {topic_q.title()}",
+                source="semantic-topic",
+                query_hint=topic_q,
+                description=f"Files matched by semantic topic filter '{topic_q}'.",
+            )
+        )
+
+    if person_q and len(matching_doc_ids) >= min_files:
+        folders.append(
+            _build_virtual_folder_payload(
+                doc_ids=matching_doc_ids,
+                title=f"Files mentioning {person_q.title()}",
+                source="entity-mention",
+                query_hint=person_q,
+                description=f"Files where extracted entities or content mention '{person_q}'.",
+            )
+        )
+
+    # Build relation-based virtual folders from connected components.
+    relation_graph = nx.Graph()
+    relation_candidates = set(memory.documents.keys())
+    if matching_doc_ids:
+        relation_candidates = matching_doc_ids
+
+    for doc_id in relation_candidates:
+        relation_graph.add_node(doc_id)
+
+    for src, dst, attrs in memory.graph.edges(data=True):
+        if src not in relation_candidates or dst not in relation_candidates:
+            continue
+        if src not in memory.documents or dst not in memory.documents:
+            continue
+        rel = str(attrs.get("relation", "")).upper()
+        if rel in {"PARENT_FOLDER", "CONTAINS_FOLDER"}:
+            continue
+        if relation_q and rel != relation_q:
+            continue
+        relation_graph.add_edge(src, dst, relation=rel)
+
+    components = [set(comp) for comp in nx.connected_components(relation_graph) if len(comp) >= min_files]
+    components.sort(key=lambda comp: len(comp), reverse=True)
+
+    relation_counter: dict[str, int] = defaultdict(int)
+    for comp in components[:8]:
+        edge_types: dict[str, int] = defaultdict(int)
+        for src, dst in relation_graph.subgraph(comp).edges():
+            rel = relation_graph.get_edge_data(src, dst, {}).get("relation", "RELATED_TO")
+            edge_types[rel] += 1
+        dominant_relation = max(edge_types, key=edge_types.get) if edge_types else (relation_q or "RELATED_TO")
+        relation_counter[dominant_relation] += 1
+        suffix = relation_counter[dominant_relation]
+
+        if relation_q:
+            title = f"{relation_q.replace('_', ' ').title()} Cluster {suffix}"
+        elif topic_q:
+            title = f"{topic_q.title()} Graph Cluster {suffix}"
+        elif person_q:
+            title = f"{person_q.title()} Relation Cluster {suffix}"
+        else:
+            title = f"Semantic Cluster {suffix}"
+
+        query_tokens = [token for token in [topic_q, person_q, dominant_relation.replace("_", " ").lower()] if token]
+        query_hint = " ".join(query_tokens).strip() or "related documents"
+        folders.append(
+            _build_virtual_folder_payload(
+                doc_ids=comp,
+                title=title,
+                source="graph-cluster",
+                query_hint=query_hint,
+                description=f"Connected component grouped by relation '{dominant_relation}'.",
+                relation=dominant_relation,
+            )
+        )
+
+    # If no specific filters were provided, add dynamic suggestions from top entities.
+    if not topic_q and not person_q and not relation_q:
+        entity_buckets: dict[str, set[str]] = defaultdict(set)
+        for doc_id, doc in memory.documents.items():
+            for name in (doc.get("entities") or {}).get("names", [])[:3]:
+                key = str(name).strip()
+                if len(key) >= 3:
+                    entity_buckets[key].add(doc_id)
+        top_entities = sorted(entity_buckets.items(), key=lambda item: len(item[1]), reverse=True)[:4]
+        for entity_name, doc_ids in top_entities:
+            if len(doc_ids) < min_files:
+                continue
+            folders.append(
+                _build_virtual_folder_payload(
+                    doc_ids=doc_ids,
+                    title=f"Files mentioning {entity_name}",
+                    source="entity-suggestion",
+                    query_hint=entity_name,
+                    description="Auto-suggested virtual folder from extracted entities.",
+                )
+            )
+
+    # De-duplicate folders by exact file-set signature.
+    seen_signatures = set()
+    deduped = []
+    for folder in folders:
+        signature = tuple(sorted(file_item["id"] for file_item in folder.get("files", [])))
+        if not signature or signature in seen_signatures:
+            continue
+        seen_signatures.add(signature)
+        deduped.append(folder)
+
+    return {
+        "filters": {
+            "topic": topic_q,
+            "person": person_q,
+            "relation": relation_q,
+            "min_files": min_files,
+        },
+        "count": len(deduped),
+        "folders": deduped,
+    }
+
+
 @app.get("/debug/graph")
 def debug_graph():
     """
@@ -647,6 +876,8 @@ def similarity(payload: SimilarityRequest):
                 "label": pair.get("label", ""),
                 "metrics": pair.get("metrics", {}),
                 "shared_keywords": pair.get("shared_keywords", []),
+                "word_overlap": pair.get("word_overlap", {}),
+                "contextual_meaning": pair.get("contextual_meaning", {}),
                 "shared_entities": pair.get("shared_entities", []),
                 "explanation": pair.get("explanation", ""),
             }
@@ -765,6 +996,38 @@ def update_file_content(payload: dict):
 
     _reindex_memory()
     return {"status": "ok", "path": rel_path}
+
+
+@app.post("/files/rename")
+def rename_file(payload: dict):
+    """Rename or move a managed file under ROOT_DIR and re-index."""
+    old_path_raw = str(payload.get("old_path", "")).strip()
+    new_path_raw = str(payload.get("new_path", "")).strip().strip('"').strip("'")
+
+    if not old_path_raw or not new_path_raw:
+        raise HTTPException(status_code=400, detail="Both old_path and new_path are required.")
+
+    if new_path_raw.endswith("/") or new_path_raw.endswith("\\"):
+        raise HTTPException(status_code=400, detail="New path must include a filename.")
+
+    old_abs, old_rel = _resolve_relative_path(old_path_raw)
+    new_abs, new_rel = _resolve_relative_path(new_path_raw)
+
+    if not os.path.exists(old_abs) or not os.path.isfile(old_abs):
+        raise HTTPException(status_code=404, detail="Source file not found.")
+    if os.path.exists(new_abs):
+        raise HTTPException(status_code=409, detail="Destination already exists.")
+
+    _ensure_supported_extension(new_abs)
+
+    try:
+        os.makedirs(os.path.dirname(new_abs), exist_ok=True)
+        os.replace(old_abs, new_abs)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to rename file: {exc}")
+
+    _reindex_memory()
+    return {"status": "ok", "old_path": old_rel, "new_path": new_rel}
 
 
 @app.delete("/files")
