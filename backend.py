@@ -1,17 +1,24 @@
 import hashlib
+import io
 import json
+import logging
 import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 
+import fitz
 import networkx as nx
 import numpy as np
 import ollama
 from docx import Document
-from pypdf import PdfReader
 from rank_bm25 import BM25Okapi
 from sentence_transformers import SentenceTransformer
+
+try:
+    from rapidocr_onnxruntime import RapidOCR
+except Exception:
+    RapidOCR = None
 
 try:
     import faiss
@@ -24,6 +31,143 @@ except Exception:
     CrossEncoder = None
 
 
+logging.getLogger("pypdf").setLevel(logging.ERROR)
+
+
+def _index_debug(message):
+    print(f"[index] {message}")
+
+
+_OCR_ENGINE = None
+
+
+def _get_ocr_engine():
+    global _OCR_ENGINE
+    if _OCR_ENGINE is not None:
+        return _OCR_ENGINE
+    if RapidOCR is None:
+        return None
+    try:
+        _OCR_ENGINE = RapidOCR()
+    except Exception as error:
+        _index_debug(f"ocr unavailable: {error.__class__.__name__}")
+        _OCR_ENGINE = None
+    return _OCR_ENGINE
+
+
+def _pixmap_to_rgb_array(pixmap):
+    array = np.frombuffer(pixmap.samples, dtype=np.uint8)
+    array = array.reshape(pixmap.height, pixmap.width, pixmap.n)
+    if pixmap.n >= 4:
+        array = array[:, :, :3]
+    return array
+
+
+def _ocr_page(page, ocr_engine, scale=2.0):
+    matrix = fitz.Matrix(scale, scale)
+    pixmap = page.get_pixmap(matrix=matrix, alpha=False)
+    image = _pixmap_to_rgb_array(pixmap)
+    result = ocr_engine(image)
+    if not isinstance(result, tuple) or not result:
+        return ""
+    entries = result[0] or []
+    texts = [entry[1] for entry in entries if len(entry) > 1 and entry[1]]
+    return " ".join(texts).strip()
+
+
+def _extract_pdf_text(filepath, max_ocr_pages=5, ocr_scale=2.0):
+    """Extract PDF text using PyMuPDF, OCRing blank pages when needed."""
+    content_parts = []
+    text_pages = 0
+    ocr_pages = 0
+
+    try:
+        doc = fitz.open(filepath)
+    except Exception as error:
+        _index_debug(f"pdf open failed -> {os.path.basename(filepath)} ({error.__class__.__name__})")
+        return "", "metadata_only", f"pdf_open_failed_{error.__class__.__name__.lower()}"
+
+    try:
+        if doc.needs_pass and not doc.authenticate(""):
+            _index_debug(f"pdf encrypted -> {os.path.basename(filepath)}")
+            return "", "metadata_only", "encrypted_pdf"
+
+        page_count = doc.page_count
+        if page_count == 0:
+            _index_debug(f"pdf empty -> {os.path.basename(filepath)}")
+            return "", "metadata_only", "empty_pdf"
+
+        ocr_engine = _get_ocr_engine()
+        _index_debug(
+            f"pdf pages={page_count} ocr={'on' if ocr_engine is not None else 'off'} -> {os.path.basename(filepath)}"
+        )
+
+        for page_index in range(page_count):
+            try:
+                page = doc.load_page(page_index)
+            except Exception:
+                continue
+
+            try:
+                page_text = (page.get_text("text") or "").strip()
+            except Exception:
+                page_text = ""
+
+            if page_text:
+                content_parts.append(page_text)
+                text_pages += 1
+                continue
+
+            if ocr_engine is None or ocr_pages >= max_ocr_pages:
+                continue
+
+            try:
+                ocr_text = _ocr_page(page, ocr_engine, scale=ocr_scale)
+            except Exception:
+                ocr_text = ""
+
+            if ocr_text:
+                content_parts.append(ocr_text)
+                ocr_pages += 1
+                _index_debug(
+                    f"ocr page {page_index + 1}/{page_count} -> {os.path.basename(filepath)}"
+                )
+
+        content = "\n".join(part for part in content_parts if part).strip()
+        if content:
+            if ocr_pages and not text_pages:
+                reason = "scanned_pdf_ocr"
+                if page_count > max_ocr_pages:
+                    reason = "scanned_pdf_ocr_partial"
+                _index_debug(
+                    f"pdf ocr complete -> {os.path.basename(filepath)} (pages={ocr_pages}, chars={len(content)})"
+                )
+                return content, "ocr_text", reason
+            if ocr_pages:
+                _index_debug(
+                    f"pdf mixed text+ocr -> {os.path.basename(filepath)} (text_pages={text_pages}, ocr_pages={ocr_pages})"
+                )
+                return content, "mixed_text", "pdf_text_plus_ocr"
+            _index_debug(f"pdf text extracted -> {os.path.basename(filepath)} ({len(content)} chars)")
+            return content, "full_text", ""
+
+        if ocr_engine is None:
+            _index_debug(f"metadata-only: ocr unavailable -> {os.path.basename(filepath)}")
+            return "", "metadata_only", "scanned_pdf_no_ocr_engine"
+        if page_count > max_ocr_pages:
+            _index_debug(
+                f"metadata-only: scanned pdf exceeded ocr page limit ({page_count} > {max_ocr_pages}) -> {os.path.basename(filepath)}"
+            )
+            return "", "metadata_only", "scanned_pdf_too_many_pages_for_ocr"
+        _index_debug(f"metadata-only: ocr found no text -> {os.path.basename(filepath)}")
+        return "", "metadata_only", "scanned_pdf_ocr_empty"
+    finally:
+        try:
+            doc.close()
+        except Exception:
+            pass
+
+
 def _extract_text_from_path(filepath):
     ext = os.path.splitext(filepath)[1].lower()
     content = ""
@@ -32,18 +176,26 @@ def _extract_text_from_path(filepath):
             with open(filepath, "r", encoding="utf-8", errors="ignore") as f:
                 content = f.read()
         elif ext == ".pdf":
-            with open(filepath, "rb") as f:
-                reader = PdfReader(f)
-                for page in reader.pages:
-                    page_text = page.extract_text()
-                    if page_text:
-                        content += page_text + "\n"
+            content, _, _ = _extract_pdf_text(filepath)
         elif ext == ".docx":
             doc = Document(filepath)
             content = "\n".join(p.text for p in doc.paragraphs)
     except Exception as error:
-        print(f"Error reading {filepath}: {error}")
+        print(f"Skipped unreadable file: {filepath} ({error.__class__.__name__})")
     return content
+
+
+def _metadata_only_text(filepath):
+    """Build lightweight searchable text from filesystem metadata only."""
+    filename = os.path.basename(filepath)
+    stem, ext = os.path.splitext(filename)
+    folder = os.path.dirname(filepath)
+    tokens = [
+        stem.replace("_", " ").replace("-", " "),
+        ext.lstrip("."),
+        os.path.basename(folder).replace("_", " ").replace("-", " "),
+    ]
+    return " ".join(part for part in tokens if part).strip()
 
 
 class FileProcessor:
@@ -64,6 +216,9 @@ class SemanticMemory:
         self.model_name = os.getenv("SEMANTIC_EMBED_MODEL", "BAAI/bge-small-en")
         self.chunk_size = int(os.getenv("SEMANTIC_CHUNK_SIZE", "300"))
         self.chunk_overlap = int(os.getenv("SEMANTIC_CHUNK_OVERLAP", "50"))
+        self.max_pdf_bytes = int(os.getenv("SEMANTIC_PDF_MAX_BYTES", str(10 * 1024 * 1024)))
+        self.max_pdf_ocr_pages = int(os.getenv("SEMANTIC_PDF_OCR_MAX_PAGES", "5"))
+        self.pdf_ocr_scale = float(os.getenv("SEMANTIC_PDF_OCR_SCALE", "2.0"))
         self.enable_rerank = os.getenv("SEMANTIC_ENABLE_RERANK", "0") == "1"
         self.enable_llm_intent = os.getenv("SEMANTIC_ENABLE_LLM_INTENT", "1") == "1"
         self.cache_dir = os.path.join(self.root_directory, ".semantic_cache")
@@ -117,17 +272,14 @@ class SemanticMemory:
         except Exception:
             pass
 
-    def _iter_supported_files(self):
-        supported = {".txt", ".md", ".pdf", ".docx", ".py", ".json"}
+    def _iter_indexable_files(self):
         for root, _, files in os.walk(self.root_directory):
             if ".semantic_cache" in root:
                 continue
             for filename in files:
                 if filename.startswith("~$") or filename.startswith("."):
                     continue
-                ext = os.path.splitext(filename)[1].lower()
-                if ext in supported:
-                    yield os.path.join(root, filename)
+                yield os.path.join(root, filename)
 
     def _compute_corpus_signature(self, files):
         entries = []
@@ -276,10 +428,13 @@ class SemanticMemory:
         self.faiss_index.add(matrix)
 
     def index_files(self):
-        print(">>> Scanning and Indexing files...")
-        files = sorted(list(self._iter_supported_files()))
+        _index_debug(f"starting scan in {self.root_directory}")
+        supported = {".txt", ".md", ".pdf", ".docx", ".py", ".json"}
+        files = sorted(list(self._iter_indexable_files()))
+        _index_debug(f"discovered {len(files)} file(s) before indexing")
         signature = self._compute_corpus_signature(files)
         if self._load_cached_artifacts(signature):
+            _index_debug("cache hit; loaded cached artifacts and skipped reindexing")
             return
 
         self.documents = {}
@@ -290,19 +445,70 @@ class SemanticMemory:
         self.chunk_texts = []
         self.bm25_chunk_ids = []
 
+        texts_for_entities: dict[str, tuple[str, str]] = {}
         workers = min(max(1, (os.cpu_count() or 4) - 1), 8)
-        with ThreadPoolExecutor(max_workers=workers) as executor:
-            texts = list(executor.map(_extract_text_from_path, files))
 
-        for filepath, text in zip(files, texts):
-            filename = os.path.basename(filepath)
+        def _prepare_file(path):
+            ext = os.path.splitext(path)[1].lower()
+            if ext not in supported:
+                _index_debug(f"metadata-only: unsupported extension -> {os.path.basename(path)}")
+                return "", "metadata_only", "unsupported_extension"
+
+            if ext == ".pdf":
+                try:
+                    size_bytes = os.path.getsize(path)
+                except OSError:
+                    size_bytes = 0
+
+                if size_bytes > self.max_pdf_bytes:
+                    _index_debug(
+                        f"metadata-only: pdf too large ({size_bytes} bytes) -> {os.path.basename(path)}"
+                    )
+                    return "", "metadata_only", "pdf_too_large"
+
+                _index_debug(f"extracting pdf -> {os.path.basename(path)}")
+                text, mode, reason = _extract_pdf_text(
+                    path,
+                    max_ocr_pages=self.max_pdf_ocr_pages,
+                    ocr_scale=self.pdf_ocr_scale,
+                )
+                if mode == "metadata_only":
+                    _index_debug(f"metadata-only: {reason} -> {os.path.basename(path)}")
+                    return "", "metadata_only", reason
+                _index_debug(
+                    f"{mode} indexed -> {os.path.basename(path)} ({len(text)} chars)"
+                )
+                return text, mode, reason
+
+            _index_debug(f"extracting text -> {os.path.basename(path)}")
+            text = _extract_text_from_path(path)
             if not text.strip():
-                text = filename.replace("_", " ").replace(".", " ")
+                _index_debug(f"metadata-only: no extractable text -> {os.path.basename(path)}")
+                return "", "metadata_only", "unreadable_or_empty"
+            _index_debug(f"full-text indexed -> {os.path.basename(path)} ({len(text)} chars)")
+            return text, "full_text", ""
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            prepared_files = list(executor.map(_prepare_file, files))
+
+        for filepath, (extracted_text, indexing_mode, indexing_reason) in zip(files, prepared_files):
+            filename = os.path.basename(filepath)
+            ext = os.path.splitext(filepath)[1].lower()
+            text = extracted_text if indexing_mode == "full_text" else _metadata_only_text(filepath)
+            if indexing_mode in {"ocr_text", "mixed_text"}:
+                text = extracted_text
 
             stat = os.stat(filepath)
             mod_time = datetime.fromtimestamp(stat.st_mtime).isoformat()
             file_id = FileProcessor.get_file_hash(filepath)
             metadata = self._extract_metadata(filepath, text, mod_time)
+            metadata["indexing_mode"] = indexing_mode
+            if indexing_reason:
+                metadata["indexing_reason"] = indexing_reason
+
+            _index_debug(
+                f"indexed -> {filename} | mode={indexing_mode} | reason={indexing_reason or 'none'} | preview={text[:60]!r}"
+            )
 
             doc_payload = {
                 "id": file_id,
@@ -315,6 +521,7 @@ class SemanticMemory:
             }
             self.documents[file_id] = doc_payload
             self.doc_ids_in_order.append(file_id)
+            texts_for_entities[file_id] = (text, filename)
 
             chunks = self._chunk_text(text)
             if not chunks:
@@ -338,6 +545,7 @@ class SemanticMemory:
         if self.chunks:
             chunk_tokens = [item["tokens"] for item in self.chunks]
             self.bm25 = BM25Okapi(chunk_tokens)
+            _index_debug(f"building embeddings for {len(self.chunk_texts)} chunk(s)")
             encoded_chunks = self.encoder.encode(
                 self.chunk_texts,
                 batch_size=32,
@@ -348,6 +556,7 @@ class SemanticMemory:
         else:
             self.bm25 = None
             self.chunk_embeddings = np.array([], dtype=np.float32)
+            _index_debug("no chunks generated; skipping embedding build")
 
         self._build_faiss_index()
 
@@ -358,32 +567,45 @@ class SemanticMemory:
             doc_matrix = self.chunk_embeddings[indices]
             self.vectors[doc_id] = np.mean(doc_matrix, axis=0)
 
-        print(f">>> Indexed {len(self.documents)} documents and {len(self.chunks)} chunks.")
+        n_meta = sum(
+            1 for d in self.documents.values()
+            if d.get("metadata", {}).get("indexing_mode") == "metadata_only"
+        )
+        _index_debug(
+            f"indexed {len(self.documents)} document(s), {len(self.chunks)} chunk(s), {n_meta} metadata-only"
+        )
 
         # ── Semantic enrichment (runs after all vectors are ready) ──────────
         # 1. Extract entities from each document's text and store on the doc
         print(">>> Extracting entities from documents...")
-        for filepath, text in zip(files, texts):
-            file_id = FileProcessor.get_file_hash(filepath)
+        for file_id, (text, filename) in texts_for_entities.items():
             if file_id in self.documents:
-                entities = self._extract_entities(text, os.path.basename(filepath))
+                entities = self._extract_entities(text, filename)
                 self.documents[file_id]["entities"] = entities
+                _index_debug(f"entities extracted -> {filename} ({sum(len(v) for v in entities.values())} values)")
 
         # 2. Build folder semantic profiles from raw doc vectors
         print(">>> Building folder semantic profiles...")
         folder_profiles = self._build_folder_profiles()
         self._folder_profiles = folder_profiles  # cache on self for build_graph
+        _index_debug(f"folder profiles built -> {len(folder_profiles)} folder(s)")
 
         # 3. Context-enrich doc vectors with folder profiles
         print(">>> Context-enriching document vectors...")
         self._context_enrich_vectors(folder_profiles)
+        _index_debug("document vectors context-enriched")
 
         # 4. Topic clustering on enriched vectors
         print(">>> Running topic cluster detection...")
         self._topic_clusters = self._build_topic_clusters()
+        _index_debug(f"topic clustering complete -> {len(set(self._topic_clusters.values())) if self._topic_clusters else 0} cluster(s)")
 
         self.build_graph()
+        _index_debug(
+            f"graph built -> {self.graph.number_of_nodes()} node(s), {self.graph.number_of_edges()} edge(s)"
+        )
         self._save_cached_artifacts(signature)
+        _index_debug("cached artifacts saved")
 
     # ── Semantic understanding helpers ────────────────────────────────────
 

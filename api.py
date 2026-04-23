@@ -27,6 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from backend import SemanticMemory
+from config import get_root_directory
 
 # ── App setup ──────────────────────────────────────────────────────────────
 
@@ -36,8 +37,10 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "http://localhost:5173",   # Vite dev server
+        "http://localhost:5174",   # Vite fallback when 5173 is occupied
         "http://localhost:3000",   # CRA fallback
         "http://127.0.0.1:5173",
+        "http://127.0.0.1:5174",
     ],
     allow_credentials=True,
     allow_methods=["*"],
@@ -46,7 +49,7 @@ app.add_middleware(
 
 # ── Initialise the SemanticMemory engine (once, at startup) ────────────────
 
-ROOT_DIR = os.getenv("SEMANTIC_ROOT_DIR", os.path.join(os.path.dirname(__file__), "test_documents"))
+ROOT_DIR = get_root_directory()
 
 print(f">>> Starting MemoryGraph API — root: {ROOT_DIR}")
 memory = SemanticMemory(root_directory=ROOT_DIR)
@@ -764,7 +767,30 @@ def debug_graph():
 def list_files():
     """List all supported files under ROOT_DIR for file-management UI."""
     items = []
-    for path in sorted(memory._iter_supported_files()):
+
+    if hasattr(memory, "_iter_supported_files"):
+        file_iter = memory._iter_supported_files()
+    elif hasattr(memory, "_iter_indexable_files"):
+        file_iter = (
+            p for p in memory._iter_indexable_files()
+            if os.path.splitext(p)[1].lower() in SUPPORTED_EXTENSIONS
+        )
+    else:
+        # Fallback scan if backend internals change.
+        def _fallback_iter():
+            for root, _, files in os.walk(ROOT_DIR):
+                if ".semantic_cache" in root:
+                    continue
+                for filename in files:
+                    if filename.startswith("~$") or filename.startswith("."):
+                        continue
+                    path = os.path.join(root, filename)
+                    if os.path.splitext(path)[1].lower() in SUPPORTED_EXTENSIONS:
+                        yield path
+
+        file_iter = _fallback_iter()
+
+    for path in sorted(file_iter):
         try:
             stat = os.stat(path)
         except FileNotFoundError:

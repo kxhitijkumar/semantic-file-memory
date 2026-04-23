@@ -2,15 +2,15 @@ import streamlit as st
 import streamlit.components.v1 as components
 from backend import SemanticMemory
 import os
+from config import get_root_directory
 
 st.set_page_config(page_title="Semantic File Memory", layout="wide")
 
 @st.cache_resource
 def load_system():
-    # SET YOUR FOLDER
-    target_folder = "./test_documents" 
+    target_folder = get_root_directory()
     if not os.path.exists(target_folder):
-        os.makedirs(target_folder)
+        os.makedirs(target_folder, exist_ok=True)
     return SemanticMemory(target_folder)
 
 st.title("Semantic File Memory and Knowledge Graph Based Personal Knowledge Engine")

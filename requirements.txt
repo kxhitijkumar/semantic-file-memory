@@ -11,3 +11,6 @@ numpy
 tqdm
 watchdog
 faiss-cpu
+pymupdf
+rapidocr-onnxruntime
+pillow

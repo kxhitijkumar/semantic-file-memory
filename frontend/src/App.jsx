@@ -1,4 +1,5 @@
 import { useState, useCallback, useEffect, useRef, useMemo } from "react";
+import { forceSimulation, forceManyBody, forceCollide, forceLink, forceCenter, forceX, forceY } from "d3-force";
 
 const API_BASE = "http://localhost:8000";
 
@@ -448,26 +449,54 @@ function DetailPanel({ result }) {
 function useForceGraph(graphData, filter, showFolders, W, H) {
   const [positions, setPositions] = useState({});
   const simRef = useRef(null);
-  const rafRef = useRef(null);
+  const positionsRef = useRef({});
 
   useEffect(() => {
     if (!graphData || !graphData.nodes.length) return;
 
-    // Build working node set — seed positions spread across the full canvas
+    const rootSize = Math.max(320, Math.min(W, H));
+
+    const clusterKeyFor = (node) => {
+      if (node.nodeType === "folder") {
+        return `folder:${(node.relPath || node.label || "root").split("/")[0] || "root"}`;
+      }
+      const parent = (node.folder || node.path || "").replace(/\\/g, "/");
+      const parts = parent.split("/").filter(Boolean);
+      return `file:${parts.slice(0, 2).join("/") || node.ext || "files"}`;
+    };
+
+    const clusterKeys = [];
+    const clusterIndex = new Map();
+
+    // Build working node set — seed positions near cluster anchors first.
     const nodes = graphData.nodes
       .filter(n => showFolders || n.nodeType !== "folder")
       .map((n, i, arr) => {
-        // Golden-angle spiral seeding — distributes nodes evenly, avoids
-        // the random clumping that forces them to fight their way apart
-        const existing = positions[n.id];
-        if (existing) return { ...n, ...existing, vx: 0, vy: 0 };
-        const angle = i * 2.399963; // golden angle in radians
-        const radius = 60 + (i / arr.length) * Math.min(W, H) * 0.38;
+        const existing = positionsRef.current[n.id];
+        const clusterKey = clusterKeyFor(n);
+        if (!clusterIndex.has(clusterKey)) {
+          clusterIndex.set(clusterKey, clusterKeys.length);
+          clusterKeys.push(clusterKey);
+        }
+        const clusterId = clusterIndex.get(clusterKey);
+        const ring = Math.floor(clusterId / Math.max(1, Math.floor((2 * Math.PI * rootSize) / 220)));
+        const ringCapacity = Math.max(6, Math.floor((2 * Math.PI * (rootSize * 0.24 + ring * 92)) / 220));
+        const slot = clusterId % ringCapacity;
+        const angle = (slot / ringCapacity) * Math.PI * 2 - Math.PI / 2 + ring * 0.28;
+        const radius = rootSize * 0.22 + ring * 94;
+        const anchorX = W / 2 + Math.cos(angle) * radius;
+        const anchorY = H / 2 + Math.sin(angle) * radius;
+        const jitter = 14 + (i % 7) * 3;
         return {
           ...n,
-          x: W / 2 + radius * Math.cos(angle),
-          y: H / 2 + radius * Math.sin(angle),
-          vx: 0, vy: 0,
+          x: existing?.x ?? anchorX + Math.cos(i * 1.618) * jitter,
+          y: existing?.y ?? anchorY + Math.sin(i * 1.618) * jitter,
+          vx: 0,
+          vy: 0,
+          clusterKey,
+          clusterId,
+          anchorX,
+          anchorY,
         };
       });
 
@@ -480,96 +509,89 @@ function useForceGraph(graphData, filter, showFolders, W, H) {
       return e.type === filter;
     }).filter(e => nodeMap[e.from] && nodeMap[e.to]);
 
-    // Force simulation — runs in a ref, writes positions via setState each frame
+    // d3-force link expects source/target keys, while backend edges use from/to.
+    const simLinks = edges.map(e => ({ ...e, source: e.from, target: e.to }));
+
+    const clusterAnchors = new Map();
+    clusterKeys.forEach((key, index) => {
+      const ring = Math.floor(index / Math.max(1, Math.floor((2 * Math.PI * rootSize) / 240)));
+      const ringCapacity = Math.max(6, Math.floor((2 * Math.PI * (rootSize * 0.24 + ring * 92)) / 240));
+      const slot = index % ringCapacity;
+      const phase = ring * 0.28;
+      const radius = rootSize * 0.24 + ring * 92;
+      const angle = (slot / ringCapacity) * Math.PI * 2 - Math.PI / 2 + phase;
+      clusterAnchors.set(key, {
+        x: W / 2 + Math.cos(angle) * radius,
+        y: H / 2 + Math.sin(angle) * radius,
+      });
+    });
+
+    const linkDistance = (link) => {
+      if (link.type === "VERSION_OF") return 120;
+      if (link.type === "CO_LOCATED") return 140;
+      if (link.type === "RELATED_TO") return 180;
+      if (link.type === "SHARES_ENTITY") return 150;
+      if (link.type === "SAME_TOPIC") return 165;
+      if (link.type === "PARENT_FOLDER") return 95;
+      if (link.type === "CONTAINS_FOLDER") return 105;
+      return 130;
+    };
+
+    const linkStrength = (link) => {
+      if (link.type === "VERSION_OF") return 0.38;
+      if (link.type === "CO_LOCATED") return 0.26;
+      if (link.type === "RELATED_TO") return 0.12;
+      if (link.type === "SHARES_ENTITY") return 0.20;
+      if (link.type === "SAME_TOPIC") return 0.14;
+      if (link.type === "PARENT_FOLDER") return 0.42;
+      if (link.type === "CONTAINS_FOLDER") return 0.30;
+      return 0.18;
+    };
+
+    const simulation = forceSimulation(nodes)
+      .force("center", forceCenter(W / 2, H / 2))
+      .force("charge", forceManyBody()
+        .strength(d => (d.nodeType === "folder" ? -260 : -160))
+        .distanceMax(Math.max(W, H) * 1.1))
+      .force("collide", forceCollide().radius(d => (d.nodeType === "folder" ? 18 : (d.size || 10) + 5)).iterations(2))
+      .force("x", forceX(d => clusterAnchors.get(d.clusterKey)?.x ?? W / 2).strength(0.08))
+      .force("y", forceY(d => clusterAnchors.get(d.clusterKey)?.y ?? H / 2).strength(0.08))
+      .force("link", forceLink(simLinks)
+        .id(d => d.id)
+        .distance(linkDistance)
+        .strength(linkStrength))
+      .alphaMin(0.015)
+      .alphaDecay(nodes.length > 250 ? 0.03 : 0.02)
+      .velocityDecay(0.34);
+
+    const tickStride = nodes.length > 450 ? 8 : nodes.length > 250 ? 6 : nodes.length > 150 ? 4 : 2;
+    const maxTicks = nodes.length > 450 ? 420 : nodes.length > 250 ? 520 : 700;
     let tick = 0;
-    const ALPHA_DECAY = 0.012;   // slower decay → more time to spread out
-    let alpha = 1.0;
-
-    // Ideal spring distances — generous so connected nodes stay comfortably apart
-    const IDEAL = {
-      VERSION_OF:      160,  // was 90
-      CO_LOCATED:      200,  // was 110
-      RELATED_TO:      280,  // was 160
-      PARENT_FOLDER:   130,  // was 70
-      CONTAINS_FOLDER: 150,  // was 80
-    };
-    // Spring strengths — weaker so repulsion wins the spread battle
-    const STRENGTH = {
-      VERSION_OF:      0.08,  // was 0.18
-      CO_LOCATED:      0.06,  // was 0.12
-      RELATED_TO:      0.03,  // was 0.06
-      PARENT_FOLDER:   0.10,  // was 0.22
-      CONTAINS_FOLDER: 0.09,  // was 0.20
-    };
-
-    function step() {
-      if (alpha < 0.01) return;
-      alpha *= (1 - ALPHA_DECAY);
-      tick++;
-
-      // Repulsion between all node pairs — long-range, strong enough to win
-      for (let i = 0; i < nodes.length; i++) {
-        for (let j = i + 1; j < nodes.length; j++) {
-          const a = nodes[i], b = nodes[j];
-          const dx = b.x - a.x, dy = b.y - a.y;
-          const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-          // Larger repulsion radius and stronger force — was repR*{55,80}, force*300
-          const repR  = (a.nodeType === "folder" || b.nodeType === "folder") ? 200 : 160;
-          if (dist < repR * 4) {
-            const force = (alpha * 900) / (dist * dist);
-            const fx = dx / dist * force, fy = dy / dist * force;
-            a.vx -= fx; a.vy -= fy;
-            b.vx += fx; b.vy += fy;
-          }
-        }
-      }
-
-      // Spring forces along edges
-      for (const e of edges) {
-        const a = nodeMap[e.from], b = nodeMap[e.to];
-        if (!a || !b) continue;
-        const dx = b.x - a.x, dy = b.y - a.y;
-        const dist = Math.sqrt(dx * dx + dy * dy) || 1;
-        const ideal = IDEAL[e.type] || 130;
-        const str   = STRENGTH[e.type] || 0.1;
-        const delta = (dist - ideal) * str * alpha;
-        const fx = dx / dist * delta, fy = dy / dist * delta;
-        a.vx += fx; a.vy += fy;
-        b.vx -= fx; b.vy -= fy;
-      }
-
-      // Centre gravity — very gentle, just enough to keep orphan nodes on screen
-      const grav = 0.004 * alpha;  // was 0.015 — too strong, fights spread
+    let lastCommitAt = 0;
+    simulation.on("tick", () => {
+      tick += 1;
+      if (tick % tickStride !== 0) return;
+      const now = performance.now();
+      if (now - lastCommitAt < 28) return;
+      const snap = {};
       for (const n of nodes) {
-        n.vx += (W / 2 - n.x) * grav;
-        n.vy += (H / 2 - n.y) * grav;
+        snap[n.id] = { x: n.x, y: n.y };
       }
+      positionsRef.current = snap;
+      setPositions(snap);
+      lastCommitAt = now;
 
-      // Integrate + damping + bounds
-      const DAMP = 0.82;  // was 0.72 — less damping lets nodes travel further
-      for (const n of nodes) {
-        n.vx *= DAMP; n.vy *= DAMP;
-        n.x = Math.max(24, Math.min(W - 24, n.x + n.vx));
-        n.y = Math.max(24, Math.min(H - 24, n.y + n.vy));
+      // End simulation earlier on large graphs to avoid long main-thread pressure.
+      if (tick >= maxTicks || simulation.alpha() < 0.028) {
+        simulation.stop();
       }
+    });
 
-      // Snapshot to state every 2 ticks for smooth rendering
-      if (tick % 2 === 0) {
-        const snap = {};
-        nodes.forEach(n => { snap[n.id] = { x: n.x, y: n.y }; });
-        setPositions(snap);
-      }
-
-      rafRef.current = requestAnimationFrame(step);
-    }
-
-    rafRef.current = requestAnimationFrame(step);
-    simRef.current = { nodes, nodeMap };
-
-    return () => { if (rafRef.current) cancelAnimationFrame(rafRef.current); };
+    simRef.current = simulation;
+    return () => simulation.stop();
   }, [graphData, filter, showFolders, W, H]);
 
-  return { positions, simNodes: simRef.current?.nodes || [] };
+  return positions;
 }
 
 /* ─── Graph panel ─────────────────────────────────────────────────────────── */
@@ -600,51 +622,7 @@ function GraphPanel({
     return () => ro.disconnect();
   }, []);
 
-  const positions = useMemo(() => {
-    if (!graphData || !graphData.nodes?.length) return {};
-
-    const nodes = graphData.nodes.filter(n => showFolders || n.nodeType !== "folder");
-    if (!nodes.length) return {};
-
-    const byType = {
-      folders: nodes.filter(n => n.nodeType === "folder").sort((a, b) => (a.label || "").localeCompare(b.label || "")),
-      files: nodes.filter(n => n.nodeType !== "folder").sort((a, b) => {
-        const aKey = `${a.ext || "zzz"}:${a.label || ""}`;
-        const bKey = `${b.ext || "zzz"}:${b.label || ""}`;
-        return aKey.localeCompare(bKey);
-      }),
-    };
-
-    const cx = dims.w / 2;
-    const cy = dims.h / 2;
-    const minDim = Math.max(320, Math.min(dims.w, dims.h));
-    const innerBase = Math.max(64, Math.min(130, minDim * 0.18));
-    const outerBase = Math.max(140, Math.min(320, minDim * 0.38));
-
-    const out = {};
-
-    const placeRing = (arr, baseRadius, spacing) => {
-      if (!arr.length) return;
-      const capacity = Math.max(8, Math.floor((2 * Math.PI * baseRadius) / spacing));
-      arr.forEach((node, index) => {
-        const ring = Math.floor(index / capacity);
-        const indexInRing = index % capacity;
-        const countInRing = Math.min(capacity, arr.length - ring * capacity);
-        const radius = baseRadius + ring * 44;
-        const phase = ring * 0.35;
-        const angle = (indexInRing / countInRing) * Math.PI * 2 + phase - Math.PI / 2;
-        out[node.id] = {
-          x: cx + Math.cos(angle) * radius,
-          y: cy + Math.sin(angle) * radius,
-        };
-      });
-    };
-
-    placeRing(byType.folders, innerBase, 68);
-    placeRing(byType.files, outerBase, 54);
-
-    return out;
-  }, [graphData, showFolders, dims.w, dims.h]);
+  const positions = useForceGraph(graphData, filter, showFolders, dims.w, dims.h);
   const inspectorOverlay = dims.w < 980;
   const inspectorWidth = inspectorOverlay
     ? Math.max(240, Math.min(320, Math.round(dims.w * 0.42)))
@@ -653,7 +631,10 @@ function GraphPanel({
   if (!graphData || !graphData.nodes.length)
     return <Empty icon="⬡" title="No graph data" sub="Index some documents first — the knowledge graph will appear here" />;
 
-  // Fixed node positions
+  const graphNodeTotal = graphData.nodes.length;
+  const graphEdgeTotal = graphData.edges.length;
+  const denseGraph = graphNodeTotal > 180 || graphEdgeTotal > 700;
+
   const merged = {};
   graphData.nodes.forEach(n => {
     const p = positions[n.id];
@@ -671,6 +652,35 @@ function GraphPanel({
     if (filter !== "ALL" && e.type !== filter) return false;
     return nodeMap[e.from] && nodeMap[e.to];
   });
+
+  const MAX_RENDER_NODES = denseGraph ? 420 : 900;
+  const MAX_RENDER_EDGES = denseGraph ? 1200 : 2800;
+
+  let renderNodes = visibleNodes;
+  if (visibleNodes.length > MAX_RENDER_NODES) {
+    const degree = {};
+    visibleEdges.forEach(e => {
+      degree[e.from] = (degree[e.from] || 0) + 1;
+      degree[e.to] = (degree[e.to] || 0) + 1;
+    });
+
+    const prioritized = [...visibleNodes].sort((a, b) => {
+      const aPinned = (a.id === selected || a.id === hovered || a.id === highlightId) ? 1 : 0;
+      const bPinned = (b.id === selected || b.id === hovered || b.id === highlightId) ? 1 : 0;
+      if (aPinned !== bPinned) return bPinned - aPinned;
+
+      const aScore = (degree[a.id] || 0) * 3 + (a.size || 0) + (a.nodeType === "folder" ? 0 : 5);
+      const bScore = (degree[b.id] || 0) * 3 + (b.size || 0) + (b.nodeType === "folder" ? 0 : 5);
+      return bScore - aScore;
+    });
+    renderNodes = prioritized.slice(0, MAX_RENDER_NODES);
+  }
+
+  const renderNodeIds = new Set(renderNodes.map(n => n.id));
+  const renderEdges = visibleEdges
+    .filter(e => renderNodeIds.has(e.from) && renderNodeIds.has(e.to))
+    .slice(0, MAX_RENDER_EDGES);
+
   const fileCount = visibleNodes.filter(n => n.nodeType !== "folder").length;
   const folderCount = visibleNodes.filter(n => n.nodeType === "folder").length;
 
@@ -688,6 +698,8 @@ function GraphPanel({
   const selectedEdges = selected
     ? graphData.edges.filter(e => e.from === selected || e.to === selected)
     : [];
+
+  const showAllLabels = (!denseGraph && renderNodes.length < 360) || (zoom > 1.45 && renderNodes.length < 520);
 
   // ── Interaction handlers ──────────────────────────────────────────────
   const toSVG = (clientX, clientY) => {
@@ -794,7 +806,7 @@ function GraphPanel({
           <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", borderRadius: 10,
             background: T.raised, border: `1px solid ${T.border}` }}>
             <span style={{ fontSize: 10, color: T.faint }}>Edges</span>
-            <span style={{ fontSize: 11, color: T.text, fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{visibleEdges.length}</span>
+            <span style={{ fontSize: 11, color: T.text, fontWeight: 700, fontFamily: "'DM Mono',monospace" }}>{renderEdges.length}</span>
             <span style={{ fontSize: 10, color: T.faint }}>{activeEdgeLabel}</span>
           </div>
 
@@ -911,14 +923,14 @@ function GraphPanel({
 
             <g transform={`translate(${pan.x},${pan.y}) scale(${zoom})`}>
 
-              {/* Fixed-layout guide rings */}
+              {/* Focus rings */}
               <circle cx={dims.w / 2} cy={dims.h / 2} r={Math.max(64, Math.min(130, Math.max(320, Math.min(dims.w, dims.h)) * 0.18))}
                 fill="none" stroke={T.border} strokeWidth="1" strokeDasharray="3 6" strokeOpacity="0.35" />
               <circle cx={dims.w / 2} cy={dims.h / 2} r={Math.max(140, Math.min(320, Math.max(320, Math.min(dims.w, dims.h)) * 0.38))}
                 fill="none" stroke={T.border} strokeWidth="1" strokeDasharray="5 8" strokeOpacity="0.28" />
 
               {/* ── Edges ── */}
-              {visibleEdges.map((e, i) => {
+              {renderEdges.map((e, i) => {
                 const a = nodeMap[e.from], b = nodeMap[e.to];
                 if (!a || !b) return null;
                 const meta = EDGE_META[e.type] || EDGE_META.RELATED_TO;
@@ -931,6 +943,7 @@ function GraphPanel({
                   : isStructural ? 0.18 : isActive ? 0.85 : 0.22;
                 const strokeW = isStructural ? meta.width
                   : isActive ? meta.width * 1.8 : meta.width;
+                const edgeFade = denseGraph && !isActive && !selected ? 0.12 : opacity;
 
                 return (
                   <path key={i}
@@ -938,7 +951,7 @@ function GraphPanel({
                     fill="none"
                     stroke={meta.color}
                     strokeWidth={strokeW}
-                    strokeOpacity={opacity}
+                    strokeOpacity={edgeFade}
                     strokeDasharray={meta.dash || undefined}
                     markerEnd={!isStructural ? `url(#arrow-${e.type})` : undefined}
                     style={{ transition: "stroke-opacity .25s, stroke-width .25s" }}
@@ -947,7 +960,7 @@ function GraphPanel({
               })}
 
               {/* ── Nodes ── */}
-              {visibleNodes.map(n => {
+              {renderNodes.map(n => {
                 const pos = merged[n.id];
                 if (!pos) return null;
                 const { x, y } = pos;
@@ -1005,7 +1018,7 @@ function GraphPanel({
                     )}
 
                     {/* File extension badge on larger nodes */}
-                    {!isFolder && r >= 12 && (
+                    {!isFolder && r >= 12 && !denseGraph && (
                       <text x={x} y={y + 4} textAnchor="middle"
                         fill="#fff" fontSize={r > 13 ? 8 : 7} fontWeight="700"
                         fontFamily="'DM Mono',monospace" fillOpacity={0.9}>
@@ -1014,10 +1027,10 @@ function GraphPanel({
                     )}
 
                     {/* Label — always shown for selected/hovered, shown when not dimmed for others */}
-                    {(isSel || isHov || (!dimmed && !isFolder)) && (
+                    {(isSel || isHov || (showAllLabels && !dimmed && !isFolder)) && (
                       <text x={x} y={y + r + 13} textAnchor="middle"
                         fill={dimmed ? T.faint : isFolder ? T.muted : T.text}
-                        fontSize={isFolder ? 9 : 10}
+                        fontSize={isFolder ? 9 : (denseGraph ? 9 : 10)}
                         fontFamily="'DM Sans',sans-serif" fontWeight={isSel ? "600" : "400"}
                         fillOpacity={dimmed ? 0.3 : 1}
                         style={{ pointerEvents: "none", transition: "fill-opacity .2s" }}>
@@ -1039,6 +1052,12 @@ function GraphPanel({
               background: `${T.surface}cc`, border: `1px solid ${T.border}`, borderRadius: 8, padding: "5px 8px", width: "fit-content" }}>
               Zoom {Math.round(zoom * 100)}%
             </div>
+            {denseGraph && (
+              <div style={{ fontSize: 10, color: T.amber, fontFamily: "'DM Mono',monospace",
+                background: `${T.amber}14`, border: `1px solid ${T.amber}28`, borderRadius: 8, padding: "5px 8px", width: "fit-content" }}>
+                Dense graph: force layout + reduced labels for stability
+              </div>
+            )}
           </div>
         </div>
 
